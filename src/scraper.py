@@ -33,6 +33,7 @@ from src.parsers import (
     _parse_search_results_json,
     _parse_user_items_data,
     calculate_reputation_from_ratings,
+    parse_item_detail_extras,
     parse_ratings_data,
     parse_user_head_data,
 )
@@ -1104,6 +1105,10 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                         item_data["商品主图链接"] = all_image_urls[0]
 
                                 # --- END: 新增代码块 ---
+
+                                # 3. 提取商品描述正文和成色/品牌等属性，供 AI 判断电池、维修史等
+                                item_data.update(parse_item_detail_extras(item_do))
+
                                 item_data["“想要”人数"] = await safe_get(
                                     item_do,
                                     "wantCnt",

@@ -66,6 +66,46 @@ async def _parse_search_results_json(json_data: dict, source: str) -> list:
         return []
 
 
+# 商品描述最多保留的字符数，防止个别超长描述撑大每次 AI 请求
+MAX_ITEM_DESCRIPTION_CHARS = 3000
+ITEM_DESCRIPTION_TRUNCATED_SUFFIX = "…（描述过长，已截断）"
+
+
+def parse_item_detail_extras(item_do: dict) -> dict:
+    """从详情接口的 itemDO 中提取商品描述正文和结构化属性（成色、品牌等）。
+
+    电池健康度、维修史、保修这类关键信息通常只写在描述正文里，搜索结果的标题里没有。
+    缺失的字段不会出现在返回值里。
+    """
+    extras = {}
+    if not isinstance(item_do, dict):
+        return extras
+
+    description = item_do.get("desc")
+    if isinstance(description, str):
+        description = description.strip()
+        if len(description) > MAX_ITEM_DESCRIPTION_CHARS:
+            description = (
+                description[:MAX_ITEM_DESCRIPTION_CHARS] + ITEM_DESCRIPTION_TRUNCATED_SUFFIX
+            )
+        if description:
+            extras["商品描述"] = description
+
+    properties = {}
+    labels = item_do.get("itemLabelExtList")
+    for label in labels if isinstance(labels, list) else []:
+        if not isinstance(label, dict):
+            continue
+        name = str(label.get("propertyText") or "").strip()
+        value = str(label.get("text") or "").strip()
+        if name and value and name not in properties:
+            properties[name] = value
+    if properties:
+        extras["商品属性"] = properties
+
+    return extras
+
+
 async def calculate_reputation_from_ratings(ratings_json: list) -> dict:
     """从原始评价API数据列表中，计算作为卖家和买家的好评数与好评率。"""
     seller_total = 0
