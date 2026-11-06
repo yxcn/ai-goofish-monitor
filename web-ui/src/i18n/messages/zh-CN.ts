@@ -175,6 +175,12 @@ const zhCN = {
       loading: '正在加载结果...',
       empty: '没有找到符合条件的商品记录。',
     },
+    pagination: {
+      label: '结果分页',
+      prev: '上一页',
+      next: '下一页',
+      status: '第 {page} 页，共 {total} 页 · 共 {count} 条',
+    },
     insights: {
       defaultTitle: '价格走势洞察',
       subtitle: '用历史快照回看同关键词市场，当前均价、近期波动和价格带都集中在这里。',

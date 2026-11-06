@@ -4,6 +4,44 @@ import type { TaskGenerateRequest, TaskUpdate } from '@/types/task.d.ts'
 export type TaskFormDefaults = Partial<TaskGenerateRequest & TaskUpdate>
 type QueryValue = LocationQuery[string] | undefined
 
+/** Query keys read by `parseTaskFormDefaults` (form field defaults). */
+export const TASK_FORM_QUERY_KEYS = [
+  'taskName',
+  'keyword',
+  'description',
+  'cron',
+  'account',
+  'accountStrategy',
+  'region',
+  'newPublishOption',
+  'minPrice',
+  'maxPrice',
+  'decisionMode',
+  'keywordRules',
+  'titleIncludeKeywords',
+  'maxPages',
+  'freeShipping',
+  'personalOnly',
+  'analyzeImages',
+] as const
+
+/** Query keys that open a task dialog, plus the form defaults they carry. */
+export const TASK_DIALOG_QUERY_KEYS = ['create', 'edit', ...TASK_FORM_QUERY_KEYS] as const
+
+/**
+ * Return `query` without any task-dialog key, or `null` when there is nothing to strip.
+ * Unrelated keys are kept as-is.
+ */
+export function withoutTaskDialogQuery(query: LocationQuery): LocationQuery | null {
+  const strip = new Set<string>(TASK_DIALOG_QUERY_KEYS)
+  if (!Object.keys(query).some((key) => strip.has(key))) return null
+  const rest: LocationQuery = {}
+  for (const [key, value] of Object.entries(query)) {
+    if (!strip.has(key)) rest[key] = value
+  }
+  return rest
+}
+
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on'])
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'off'])
 

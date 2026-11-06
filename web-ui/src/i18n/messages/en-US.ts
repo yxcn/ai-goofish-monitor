@@ -175,6 +175,12 @@ const enUS = {
       loading: 'Loading results...',
       empty: 'No items matched the current filters.',
     },
+    pagination: {
+      label: 'Results pagination',
+      prev: 'Previous',
+      next: 'Next',
+      status: 'Page {page} of {total} · {count} items',
+    },
     insights: {
       defaultTitle: 'Price Trend Insight',
       subtitle: 'Historical snapshots of the same keyword, including average price, short-term movement, and price band.',

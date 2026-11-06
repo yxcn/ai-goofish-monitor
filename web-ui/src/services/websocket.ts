@@ -1,5 +1,8 @@
 type WebSocketEventHandler = (data: any) => void;
 
+/** RFC 6455 close code the server uses when the connection is not authenticated. */
+const WS_CLOSE_POLICY_VIOLATION = 1008;
+
 class WebSocketService {
   private ws: WebSocket | null = null;
   private reconnectInterval = 3000;
@@ -60,11 +63,17 @@ class WebSocketService {
       }
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (event) => {
       if (this.isConnected) {
         console.log('WebSocket disconnected');
         this.isConnected = false;
         this.emit('disconnected', { isConnected: false });
+      }
+      // 1008 (policy violation): the server rejected our session. Reconnecting would loop
+      // forever, so drop the local login state and send the user to the login page.
+      if (event.code === WS_CLOSE_POLICY_VIOLATION) {
+        this.handleUnauthorized();
+        return;
       }
       // 只有在 shouldConnect 为 true 或已登录时才重连
       if (this.shouldConnect || localStorage.getItem('auth_logged_in') === 'true') {
@@ -77,6 +86,18 @@ class WebSocketService {
       // Close will trigger onclose which handles reconnect
       this.ws?.close();
     };
+  }
+
+  private handleUnauthorized() {
+    console.warn('WebSocket closed with 1008: session is no longer valid, logging out');
+    this.shouldConnect = false;
+    this.ws = null;
+    // This service lives outside any component, so it cannot use useAuth()/the router.
+    localStorage.removeItem('auth_logged_in');
+    localStorage.removeItem('auth_username');
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login';
+    }
   }
 
   public on(event: string, handler: WebSocketEventHandler) {

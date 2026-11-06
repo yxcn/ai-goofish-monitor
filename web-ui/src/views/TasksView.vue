@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useTasks } from '@/composables/useTasks'
 import type { Task, TaskUpdate } from '@/types/task.d.ts'
-import { parseTaskFormDefaults } from '@/lib/taskFormQuery'
+import { parseTaskFormDefaults, withoutTaskDialogQuery } from '@/lib/taskFormQuery'
 import TaskCreateDialog from '@/components/tasks/TaskCreateDialog.vue'
 import TasksTable from '@/components/tasks/TasksTable.vue'
 import TaskForm from '@/components/tasks/TaskForm.vue'
@@ -34,6 +34,7 @@ const {
   stoppingTaskIds,
 } = useTasks()
 const route = useRoute()
+const router = useRouter()
 
 // State for dialogs
 const isEditDialogOpen = ref(false)
@@ -51,7 +52,13 @@ const taskToDelete = computed(() => {
   if (taskToDeleteId.value === null) return null
   return tasks.value.find((task) => task.id === taskToDeleteId.value) || null
 })
-const editDefaults = computed(() => parseTaskFormDefaults(route.query))
+// URL-provided defaults (e.g. the dashboard suggestion) only apply to the task the URL names;
+// never let them leak into an edit form opened for a different task.
+const editDefaults = computed(() => {
+  if (!selectedTask.value) return undefined
+  if (route.query.edit !== String(selectedTask.value.id)) return undefined
+  return parseTaskFormDefaults(route.query)
+})
 
 function handleDeleteTask(taskId: number) {
   taskToDeleteId.value = taskId
@@ -84,18 +91,36 @@ function handleEditTask(task: Task) {
   isEditDialogOpen.value = true
 }
 
+// Open the edit dialog once per distinct `?edit=<id>`; `tasks` is watched only so the dialog
+// can open once the list has loaded. Later task refreshes (WebSocket) must not reopen or
+// reset the form.
+let handledEditQuery: string | null = null
 watch(
-  () => [route.query.edit, tasks.value],
-  () => {
-    const editTaskId = typeof route.query.edit === 'string' ? Number(route.query.edit) : NaN
+  () => [route.query.edit, tasks.value] as const,
+  ([editQuery]) => {
+    if (typeof editQuery !== 'string') {
+      handledEditQuery = null
+      return
+    }
+    if (editQuery === handledEditQuery) return
+    const editTaskId = Number(editQuery)
     if (!Number.isFinite(editTaskId)) return
     const match = tasks.value.find((task) => task.id === editTaskId)
     if (!match) return
+    handledEditQuery = editQuery
     selectedTask.value = match
     isEditDialogOpen.value = true
   },
   { immediate: true }
 )
+
+// Closing the edit dialog drops the dialog/defaults keys from the URL so a stale
+// `edit=...&taskName=...` cannot apply to the next task opened, nor reopen on reload.
+watch(isEditDialogOpen, (open) => {
+  if (open) return
+  const rest = withoutTaskDialogQuery(route.query)
+  if (rest) router.replace({ query: rest })
+})
 
 async function handleUpdateTask(data: TaskUpdate) {
   if (!selectedTask.value) return

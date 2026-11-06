@@ -25,6 +25,8 @@ export async function http(url: string, options: FetchOptions = {}) {
   }
 
   const config: RequestInit = {
+    // Send the HttpOnly session cookie set by POST /auth/status.
+    credentials: 'same-origin',
     ...options,
     headers,
   }
@@ -32,7 +34,7 @@ export async function http(url: string, options: FetchOptions = {}) {
   const response = await fetch(fullUrl, config)
 
   if (response.status === 401) {
-    // Basic Auth failed or session expired
+    // Session cookie missing/expired (or Basic Auth rejected)
     logout()
     // Optional: Redirect to login handled by router or state change
     throw new Error('Unauthorized')

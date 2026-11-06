@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useResults } from '@/composables/useResults'
 import ResultsFilterBar from '@/components/results/ResultsFilterBar.vue'
@@ -24,6 +24,10 @@ const {
   selectedFile,
   results,
   insights,
+  totalItems,
+  page,
+  totalPages,
+  setPage,
   filters,
   isLoading,
   error,
@@ -41,6 +45,15 @@ const {
 const isDeleteDialogOpen = ref(false)
 const isBlacklistDialogOpen = ref(false)
 const blacklistDraft = ref('')
+const gridContainer = ref<HTMLElement | null>(null)
+
+async function goToPage(target: number) {
+  const previous = page.value
+  setPage(target)
+  if (page.value === previous) return
+  await nextTick()
+  gridContainer.value?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+}
 
 const selectedTaskLabel = computed(() => {
   if (!selectedFile.value || fileOptions.value.length === 0) return null
@@ -157,7 +170,35 @@ async function handleSaveBlacklistRules() {
 
     <ResultsInsightsPanel :insights="insights" :selected-task-label="selectedTaskLabel" />
 
-    <ResultsGrid :results="results" :is-loading="isLoading" @toggle-block="toggleItemBlock" />
+    <div ref="gridContainer" class="scroll-mt-6">
+      <ResultsGrid :results="results" :is-loading="isLoading" @toggle-block="toggleItemBlock" />
+    </div>
+
+    <nav
+      v-if="totalPages > 1"
+      class="mt-6 flex flex-wrap items-center justify-center gap-3"
+      :aria-label="t('results.pagination.label')"
+    >
+      <Button
+        variant="outline"
+        size="sm"
+        :disabled="isLoading || page <= 1"
+        @click="goToPage(page - 1)"
+      >
+        {{ t('results.pagination.prev') }}
+      </Button>
+      <span class="text-sm text-slate-600" aria-live="polite">
+        {{ t('results.pagination.status', { page, total: totalPages, count: totalItems }) }}
+      </span>
+      <Button
+        variant="outline"
+        size="sm"
+        :disabled="isLoading || page >= totalPages"
+        @click="goToPage(page + 1)"
+      >
+        {{ t('results.pagination.next') }}
+      </Button>
+    </nav>
 
     <Dialog v-model:open="isDeleteDialogOpen">
       <DialogContent class="sm:max-w-[420px]">

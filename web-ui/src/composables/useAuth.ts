@@ -23,6 +23,12 @@ export function useAuth() {
   }
 
   function logout() {
+    // Best-effort: ask the server to clear the HttpOnly session cookie. Not awaited; a
+    // failure (or an already-expired session) must not block the local logout.
+    if (isLoggedIn.value) {
+      fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {})
+    }
+
     username.value = null
     isLoggedIn.value = false
     localStorage.removeItem('auth_username')
@@ -39,10 +45,25 @@ export function useAuth() {
     }
   }
 
+  /**
+   * Check whether the server still recognises our session cookie. Only an explicit 401 logs
+   * out; network errors or an older backend without `/auth/me` keep the local state.
+   */
+  async function verifySession() {
+    if (!isLoggedIn.value) return
+    try {
+      const response = await fetch('/auth/me', { credentials: 'same-origin' })
+      if (response.status === 401) logout()
+    } catch {
+      /* offline or server unreachable: leave the local state alone */
+    }
+  }
+
   async function login(user: string, pass: string): Promise<boolean> {
     try {
       const response = await fetch('/auth/status', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: {
           'Content-Type': 'application/json',
         },
@@ -65,6 +86,7 @@ export function useAuth() {
     username,
     isAuthenticated,
     login,
-    logout
+    logout,
+    verifySession,
   }
 }

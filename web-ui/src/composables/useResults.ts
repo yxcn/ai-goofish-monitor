@@ -17,7 +17,15 @@ export function useResults() {
   const insights = ref<ResultInsights | null>(null)
   const totalItems = ref(0)
   const page = ref(1)
+  // The backend caps `limit` at 100 per request.
   const limit = ref(100)
+  const totalPages = computed(() => Math.max(1, Math.ceil(totalItems.value / limit.value)))
+
+  function setPage(target: number) {
+    const next = Math.min(Math.max(1, Math.trunc(target)), totalPages.value)
+    if (next === page.value) return
+    page.value = next
+  }
   const blacklistKeywords = ref<string[]>([])
   const taskNameByKeyword = ref<Record<string, string>>({})
   const isFileOptionsReady = ref(false)
@@ -102,6 +110,11 @@ export function useResults() {
       })
       results.value = data.items
       totalItems.value = data.total_items
+      // e.g. the last item on the last page was hidden: fall back to the new last page.
+      if (data.items.length === 0 && page.value > 1 && data.total_items > 0) {
+        const lastPage = Math.max(1, Math.ceil(data.total_items / limit.value))
+        if (lastPage < page.value) page.value = lastPage
+      }
     } catch (e) {
       if (e instanceof Error) error.value = e
       results.value = []
@@ -254,7 +267,15 @@ export function useResults() {
   watch(filters, (val) => {
     localStorage.setItem(STORAGE_KEY_FILTERS, JSON.stringify(val))
   }, { deep: true })
-  watch([selectedFile, filters], fetchResults, { deep: true })
+  watch([selectedFile, filters], () => {
+    if (page.value !== 1) {
+      // The page watcher below performs the single refetch.
+      page.value = 1
+      return
+    }
+    fetchResults()
+  }, { deep: true })
+  watch(page, fetchResults)
   watch(selectedFile, () => {
     fetchInsights()
     fetchBlacklistRules()
@@ -299,6 +320,9 @@ export function useResults() {
     results,
     insights,
     totalItems,
+    page,
+    totalPages,
+    setPage,
     filters,
     isLoading,
     error,
