@@ -280,9 +280,13 @@ def validate_ai_response_format(parsed_response):
     return True
 
 
-@retry_on_failure(retries=3, delay=5)
 async def send_ntfy_notification(product_data, reason):
-    """兼容旧调用名，内部统一走 NotificationService。"""
+    """兼容旧调用名，内部统一走 NotificationService。
+
+    重试在 NotificationService 里按渠道做；这里不再套 retry_on_failure——
+    它只对抛异常生效，而发送失败被封装成 success=False 返回，装饰器从未真正重试过。
+    返回各渠道结果，调用方据此记录推送状态。
+    """
     service = build_notification_service()
     if not service.clients:
         safe_print(

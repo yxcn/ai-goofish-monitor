@@ -24,8 +24,44 @@ class _FailClient(NotificationClient):
         raise RuntimeError("boom")
 
 
+class _FlakyClient(NotificationClient):
+    channel_key = "flaky"
+    display_name = "FLAKY"
+    calls = 0
+
+    async def send(self, product_data, reason):
+        type(self).calls += 1
+        if type(self).calls < 3:
+            raise RuntimeError(f"timeout #{type(self).calls}")
+
+
+def test_notification_service_retries_each_channel_independently():
+    _FlakyClient.calls = 0
+    service = NotificationService(
+        [_OkClient(enabled=True), _FlakyClient(enabled=True), _FailClient(enabled=True)],
+        retry_delays=(0, 0),
+    )
+
+    results = asyncio.run(service.send_notification({"商品标题": "T14"}, "价格合适"))
+
+    assert results["ok"] == {"channel": "ok", "label": "OK", "success": True, "message": "发送成功", "attempts": 1}
+    assert results["flaky"]["success"] is True and results["flaky"]["attempts"] == 3
+    assert _FlakyClient.calls == 3
+    assert results["fail"]["success"] is False
+    assert results["fail"]["attempts"] == 3
+    assert results["fail"]["message"] == "3 次尝试均失败: boom"
+
+
+def test_test_notification_does_not_retry():
+    _FlakyClient.calls = 0
+    service = NotificationService([_FlakyClient(enabled=True)])
+    results = asyncio.run(service.send_test_notification())
+    assert results["flaky"]["success"] is False and results["flaky"]["attempts"] == 1
+    assert _FlakyClient.calls == 1
+
+
 def test_notification_service_collects_success_and_failure_results():
-    service = NotificationService([_OkClient(enabled=True), _FailClient(enabled=True)])
+    service = NotificationService([_OkClient(enabled=True), _FailClient(enabled=True)], retry_delays=())
 
     results = asyncio.run(
         service.send_notification({"商品标题": "Sony A7M4"}, "价格合适")

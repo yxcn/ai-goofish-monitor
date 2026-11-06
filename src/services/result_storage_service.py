@@ -26,6 +26,12 @@ SORT_COLUMN_MAP = {
 }
 
 
+# raw_json 里 ai_analysis.error 非空 = AI 调用失败的占位记录（json_valid 守卫避免坏 JSON 让整条查询报错）
+_AI_ERROR_ROW_SQL = (
+    "(json_valid(raw_json) AND COALESCE(json_extract(raw_json, '$.ai_analysis.error'), '') != '')"
+)
+
+
 def _get_link_unique_key(link: str) -> str:
     return link.split("&", 1)[0]
 
@@ -164,13 +170,31 @@ def _save_result_record_sync(record: dict, keyword: str) -> bool:
         keyword_hit_count = 0
 
     with sqlite_connection() as conn:
+        # 同一商品已存在时默认忽略；只有旧行是"AI 调用失败"的占位记录时才用新结果覆盖，
+        # 这样 AI 恢复后重新分析的结果能替换掉失败记录，而正常记录不会被后续运行改写。
         conn.execute(
-            """
-            INSERT OR IGNORE INTO result_items (
+            f"""
+            INSERT INTO result_items (
                 result_filename, keyword, task_name, crawl_time, publish_time, price,
                 price_display, item_id, title, link, link_unique_key, seller_nickname,
                 is_recommended, analysis_source, keyword_hit_count, raw_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(result_filename, link_unique_key) DO UPDATE SET
+                keyword = excluded.keyword,
+                task_name = excluded.task_name,
+                crawl_time = excluded.crawl_time,
+                publish_time = excluded.publish_time,
+                price = excluded.price,
+                price_display = excluded.price_display,
+                item_id = excluded.item_id,
+                title = excluded.title,
+                link = excluded.link,
+                seller_nickname = excluded.seller_nickname,
+                is_recommended = excluded.is_recommended,
+                analysis_source = excluded.analysis_source,
+                keyword_hit_count = excluded.keyword_hit_count,
+                raw_json = excluded.raw_json
+            WHERE {_AI_ERROR_ROW_SQL.replace("raw_json", "result_items.raw_json")}
             """,
             (
                 build_result_filename(keyword),
@@ -196,14 +220,53 @@ def _save_result_record_sync(record: dict, keyword: str) -> bool:
 
 
 def load_processed_link_keys(keyword: str) -> set[str]:
+    """已处理的商品 = 已落库且 AI 分析没有失败的商品。
+
+    AI 调用失败（欠费、超时、未配置）的记录带 ai_analysis.error，这类商品不算已处理，
+    下次运行会重新抓取并重新分析，否则一轮故障就让这批商品永远失去推荐机会。
+    """
     bootstrap_sqlite_storage()
     filename = build_result_filename(keyword)
     with sqlite_connection() as conn:
         rows = conn.execute(
-            "SELECT link_unique_key FROM result_items WHERE result_filename = ?",
+            f"SELECT link_unique_key FROM result_items WHERE result_filename = ? AND NOT ({_AI_ERROR_ROW_SQL})",
             (filename,),
         ).fetchall()
     return {str(row["link_unique_key"]) for row in rows if row["link_unique_key"]}
+
+
+def load_retryable_ai_error_count(keyword: str) -> int:
+    """带 AI 失败标记、下次运行会重新分析的记录数（用于日志提示）。"""
+    bootstrap_sqlite_storage()
+    filename = build_result_filename(keyword)
+    with sqlite_connection() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM result_items WHERE result_filename = ? AND {_AI_ERROR_ROW_SQL}",
+            (filename,),
+        ).fetchone()
+    return int(row["n"] if row else 0)
+
+
+async def mark_notification_status(record: dict, keyword: str, status: dict) -> None:
+    await asyncio.to_thread(_mark_notification_status_sync, record, keyword, status)
+
+
+def _mark_notification_status_sync(record: dict, keyword: str, status: dict) -> None:
+    """把推送结果写回记录的 raw_json（键 通知状态），失败的渠道能在结果里看到并补推。"""
+    bootstrap_sqlite_storage()
+    item = record.get("商品信息", {}) or {}
+    link = str(item.get("商品链接") or "")
+    link_unique_key = _get_link_unique_key(link) if link else _fallback_unique_key(record, item)
+    with sqlite_connection() as conn:
+        conn.execute(
+            """
+            UPDATE result_items
+            SET raw_json = json_set(raw_json, '$.通知状态', json(?))
+            WHERE result_filename = ? AND link_unique_key = ? AND json_valid(raw_json)
+            """,
+            (json.dumps(status, ensure_ascii=False), build_result_filename(keyword), link_unique_key),
+        )
+        conn.commit()
 
 
 async def list_result_filenames() -> list[str]:

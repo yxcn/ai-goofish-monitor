@@ -5,6 +5,7 @@
 import asyncio
 import copy
 import os
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
@@ -19,8 +20,9 @@ ATTRIBUTE_RULE_SOURCE = "attribute_rule"
 SellerLoader = Callable[[str], Awaitable[dict]]
 ImageDownloader = Callable[[str, list[str], str], Awaitable[list[str]]]
 AIAnalyzer = Callable[[dict, list[str], str], Awaitable[Optional[dict]]]
-Notifier = Callable[[dict, str], Awaitable[None]]
+Notifier = Callable[[dict, str], Awaitable[Optional[dict]]]
 Saver = Callable[[dict, str], Awaitable[bool]]
+NotificationStatusWriter = Callable[[dict, str, dict], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ class ItemAnalysisDispatcher:
         ai_analyzer: AIAnalyzer,
         notifier: Notifier,
         saver: Saver,
+        notification_status_writer: Optional[NotificationStatusWriter] = None,
     ) -> None:
         self._semaphore = asyncio.Semaphore(max(1, concurrency))
         self._skip_ai_analysis = skip_ai_analysis
@@ -62,6 +65,7 @@ class ItemAnalysisDispatcher:
         self._ai_analyzer = ai_analyzer
         self._notifier = notifier
         self._saver = saver
+        self._notification_status_writer = notification_status_writer
         self._tasks: set[asyncio.Task] = set()
         self.completed_count = 0
 
@@ -98,9 +102,14 @@ class ItemAnalysisDispatcher:
             # 画像在 AI 分析之前算好，AI 拿到的是带画像的完整记录
             record["卖家画像"] = build_seller_profile(record)
             record["ai_analysis"] = await self._build_analysis_result(job, record)
-        if await self._saver(record, job.keyword):
-            self.completed_count += 1
-        await self._notify_if_recommended(record)
+        if not await self._saver(record, job.keyword):
+            # 没落库就不推送：下次运行会把这个商品当新商品重新分析再推，现在推会变成重复推送
+            print(
+                f"   [通知] 商品 #{item_data.get('商品ID', 'N/A')} 结果未能写入数据库，跳过推送，等下次运行重试。"
+            )
+            return
+        self.completed_count += 1
+        await self._notify_if_recommended(record, job.keyword)
 
     def _check_attribute_rules(self, job: ItemAnalysisJob, record: dict) -> Optional[dict]:
         if not job.attribute_rules:
@@ -209,7 +218,7 @@ class ItemAnalysisDispatcher:
             except Exception as exc:
                 print(f"   [图片] 删除图片文件时出错: {exc}")
 
-    async def _notify_if_recommended(self, record: dict) -> None:
+    async def _notify_if_recommended(self, record: dict, keyword: str = "") -> None:
         item_data = record.get("商品信息", {}) or {}
         analysis_result = record.get("ai_analysis") or {}
         if not analysis_result.get("is_recommended"):
@@ -221,6 +230,34 @@ class ItemAnalysisDispatcher:
         if record.get("price_insight"):
             notify_data["price_insight"] = record["price_insight"]
         try:
-            await self._notifier(notify_data, analysis_result.get("reason", "无"))
+            results = await self._notifier(notify_data, analysis_result.get("reason", "无"))
         except Exception as exc:
             print(f"   [通知] 发送推荐通知失败: {exc}")
+            results = {"__error__": {"success": False, "message": str(exc)}}
+        await self._record_notification_status(record, keyword, results)
+
+    async def _record_notification_status(self, record: dict, keyword: str, results) -> None:
+        """把各渠道的推送结果写回记录；失败的渠道单独打一行醒目日志。"""
+        if not isinstance(results, dict) or not results:
+            return
+        sent = [channel for channel, result in results.items() if (result or {}).get("success")]
+        failed = {
+            channel: str((result or {}).get("message") or "未知错误")
+            for channel, result in results.items()
+            if not (result or {}).get("success")
+        }
+        if failed:
+            item_id = (record.get("商品信息", {}) or {}).get("商品ID", "N/A")
+            print(f"   [通知] ⚠️ 商品 #{item_id} 有 {len(failed)} 个渠道推送失败: " + "；".join(f"{k}: {v}" for k, v in failed.items()))
+        status = {
+            "成功": sent,
+            "失败": failed,
+            "时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        record["通知状态"] = status
+        if self._notification_status_writer is None:
+            return
+        try:
+            await self._notification_status_writer(record, keyword, status)
+        except Exception as exc:
+            print(f"   [通知] 写入推送状态失败: {exc}")
