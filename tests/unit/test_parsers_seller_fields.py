@@ -41,7 +41,7 @@ def test_head_parser_tolerates_missing_social_and_tags():
     head = asyncio.run(parse_user_head_data({"data": {"module": {"base": {"displayName": "a"}}}}))
     assert head["卖家IP属地"] == ""
     assert head["卖家粉丝数"] is None
-    assert head["卖家认证"] == []
+    assert head["卖家认证"] is None  # 没采到 tags，和"采到了但全未认证"的 [] 区分开
     assert account_certifications(None) == []
     assert account_certifications({"real_name_certification_12": "1", "idle_zhima_zheng": True}) == ["实名认证", "芝麻信用认证"]
 
@@ -151,3 +151,41 @@ def test_head_parser_extracts_business_quality_and_personal_archive():
     assert extract_personal_profile({"base": {"sex": "male", "birthYear": "1998"}}) == {"性别": "男", "年龄段": "90后"}
     assert extract_personal_profile({"base": {"gender": 0, "age": "保密"}}) == {}
     assert extract_personal_profile({"page": {"pageNumber": 1}, "items": [{"age": "80后"}]}) == {"年龄段": "80后"}
+
+
+def test_head_parser_distinguishes_missing_tags_from_no_certifications():
+    # tags 缺失 / 不是 dict → None（没采到）；tags 存在但全 false → []（采到了、都未认证）
+    missing = asyncio.run(parse_user_head_data({"data": {"module": {}}}))
+    assert missing["卖家认证"] is None
+    not_a_dict = asyncio.run(parse_user_head_data({"data": {"baseInfo": {"tags": ["real_name_certification_77"]}}}))
+    assert not_a_dict["卖家认证"] is None
+    none_certified = asyncio.run(
+        parse_user_head_data({"data": {"baseInfo": {"tags": {"real_name_certification_77": False, "xianyu_user_upgrade": True}}}})
+    )
+    assert none_certified["卖家认证"] == []
+
+
+def test_item_card_labels_tolerate_non_dict_label_vo_and_detail_params():
+    assert _parse_item_card_labels({"itemLabelDataVO": "broken", "detailParams": ["包邮"], "categoryId": 7}) == {"品类ID": 7}
+    assert _parse_item_card_labels({"itemLabelDataVO": {"labelData": "x"}, "detailParams": None}) == {}
+    assert _parse_item_card_labels("not-a-card") == {}
+
+
+def test_item_list_parser_skips_malformed_cards_instead_of_dropping_the_list():
+    items = asyncio.run(_parse_user_items_data([
+        "junk",
+        {"cardData": None},
+        {"cardData": {"id": "1", "title": "好东西", "itemStatus": 0, "priceInfo": None, "picInfo": "x", "itemLabelDataVO": [], "detailParams": "包邮"}},
+        _item_card(),
+    ]))
+    assert [item["商品ID"] for item in items] == ["1", "1097788657985"]
+    assert items[0]["商品价格"] is None
+    assert items[0]["商品主图"] is None
+    assert items[0]["商品状态"] == "在售"
+
+
+def test_seller_detail_register_time_accepts_seconds_and_milliseconds():
+    assert parse_seller_detail({"registerTime": 1713383646000})["卖家注册日期"].startswith("2024-04-1")
+    assert parse_seller_detail({"registerTime": 1713383646})["卖家注册日期"].startswith("2024-04-1")
+    assert parse_seller_detail({"registerTime": "1713383646"})["卖家注册日期"].startswith("2024-04-1")
+    assert "卖家注册日期" not in parse_seller_detail({"registerTime": 0})

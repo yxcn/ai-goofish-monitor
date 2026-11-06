@@ -6,65 +6,116 @@ from src.config import AI_DEBUG_MODE
 from src.utils import safe_get
 
 
-async def _parse_search_results_json(json_data: dict, source: str) -> list:
-    """解析搜索API的JSON数据，返回基础商品信息列表。"""
-    page_data = []
+def _timestamp_to_datetime(raw):
+    """毫秒或秒级时间戳转 datetime；小于 1e11 的值视为秒，否则按毫秒。解析不了返回 None。
+
+    接口里同一个字段有时给 1713383646000（毫秒），有时给 1713383646（秒）；
+    固定按毫秒除 1000 会把秒级值算成 1970 年。
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        timestamp = float(raw)
+    elif isinstance(raw, str) and raw.strip().isdigit():
+        timestamp = float(raw.strip())
+    else:
+        return None
+    if timestamp <= 0:
+        return None
+    if timestamp > 1e11:
+        timestamp /= 1000
     try:
-        items = await safe_get(json_data, "data", "resultList", default=[])
-        if not items:
-            print(f"LOG: ({source}) API响应中未找到商品列表 (resultList)。")
-            if AI_DEBUG_MODE:
-                print(f"--- [SEARCH DEBUG] RAW JSON RESPONSE from {source} ---")
-                print(json.dumps(json_data, ensure_ascii=False, indent=2))
-                print("----------------------------------------------------")
-            return []
-
-        for item in items:
-            main_data = await safe_get(item, "data", "item", "main", "exContent", default={})
-            click_params = await safe_get(item, "data", "item", "main", "clickParam", "args", default={})
-
-            title = await safe_get(main_data, "title", default="未知标题")
-            price_parts = await safe_get(main_data, "price", default=[])
-            price = "".join([str(p.get("text", "")) for p in price_parts if isinstance(p, dict)]).replace("当前价", "").strip() if isinstance(price_parts, list) else "价格异常"
-            # 确保price是字符串类型，避免float类型导致的"in"操作错误
-            price = str(price) if not isinstance(price, str) else price
-            if "万" in price: price = f"¥{float(price.replace('¥', '').replace('万', '')) * 10000:.0f}"
-            area = await safe_get(main_data, "area", default="地区未知")
-            seller = await safe_get(main_data, "userNickName", default="匿名卖家")
-            raw_link = await safe_get(item, "data", "item", "main", "targetUrl", default="")
-            image_url = await safe_get(main_data, "picUrl", default="")
-            pub_time_ts = click_params.get("publishTime", "")
-            item_id = await safe_get(main_data, "itemId", default="未知ID")
-            original_price = await safe_get(main_data, "oriPrice", default="暂无")
-            wants_count = await safe_get(click_params, "wantNum", default='NaN')
+        return datetime.fromtimestamp(timestamp)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
-            tags = []
-            if await safe_get(click_params, "tag") == "freeship":
-                tags.append("包邮")
-            r1_tags = await safe_get(main_data, "fishTags", "r1", "tagList", default=[])
-            for tag_item in r1_tags:
-                content = await safe_get(tag_item, "data", "content", default="")
-                if "验货宝" in content:
-                    tags.append("验货宝")
+def _text_or(value, default: str) -> str:
+    """非空字符串原样返回，其余（None、数字、空串）用默认值。"""
+    return value if isinstance(value, str) and value.strip() else default
 
-            page_data.append({
-                "商品标题": title,
-                "当前售价": price,
-                "商品原价": original_price,
-                "“想要”人数": wants_count,
-                "商品标签": tags,
-                "发货地区": area,
-                "卖家昵称": seller,
-                "商品链接": raw_link.replace("fleamarket://", "https://www.goofish.com/"),
-                "发布时间": datetime.fromtimestamp(int(pub_time_ts)/1000).strftime("%Y-%m-%d %H:%M") if pub_time_ts.isdigit() else "未知时间",
-                "商品ID": item_id
-            })
-        print(f"LOG: ({source}) 成功解析到 {len(page_data)} 条商品基础信息。")
-        return page_data
-    except Exception as e:
-        print(f"LOG: ({source}) JSON数据处理异常: {str(e)}")
+
+def _format_search_price(price_parts) -> str:
+    """搜索结果的 price 是一段段文本（"¥"、"1,494"、"当前价"），拼起来再把 "1.2万" 换算成整数。
+
+    带"万"却换算不了的（"1.2万起"）保留原文，交给后面的价格解析自行判断，不让它拖垮整页。
+    """
+    if not isinstance(price_parts, list):
+        return "价格异常"
+    price = "".join(str(p.get("text", "")) for p in price_parts if isinstance(p, dict))
+    price = price.replace("当前价", "").strip()
+    if "万" in price:
+        try:
+            amount = float(price.replace("¥", "").replace(",", "").replace("万", ""))
+        except ValueError:
+            return price
+        price = f"¥{amount * 10000:.0f}"
+    return price
+
+
+async def _parse_search_result_item(item) -> dict:
+    """解析搜索结果里的一个商品。每个字段单独兜底；没有 targetUrl 的商品无法打开详情，抛 ValueError 让上层跳过。"""
+    main_data = await safe_get(item, "data", "item", "main", "exContent", default={})
+    if not isinstance(main_data, dict):
+        main_data = {}
+    click_params = await safe_get(item, "data", "item", "main", "clickParam", "args", default={})
+    if not isinstance(click_params, dict):
+        click_params = {}
+
+    raw_link = await safe_get(item, "data", "item", "main", "targetUrl", default="")
+    if not isinstance(raw_link, str) or not raw_link.strip():
+        raise ValueError("缺少 targetUrl，无法定位商品")
+
+    tags = []
+    if click_params.get("tag") == "freeship":
+        tags.append("包邮")
+    r1_tags = await safe_get(main_data, "fishTags", "r1", "tagList", default=[])
+    for tag_item in r1_tags if isinstance(r1_tags, list) else []:
+        content = await safe_get(tag_item, "data", "content", default="")
+        if isinstance(content, str) and "验货宝" in content:
+            tags.append("验货宝")
+
+    publish_time = _timestamp_to_datetime(click_params.get("publishTime"))
+
+    return {
+        "商品标题": _text_or(main_data.get("title"), "未知标题"),
+        "当前售价": _format_search_price(main_data.get("price", [])),
+        "商品原价": main_data.get("oriPrice", "暂无"),
+        "“想要”人数": click_params.get("wantNum", "NaN"),
+        "商品标签": tags,
+        "发货地区": _text_or(main_data.get("area"), "地区未知"),
+        "卖家昵称": _text_or(main_data.get("userNickName"), "匿名卖家"),
+        "商品链接": raw_link.replace("fleamarket://", "https://www.goofish.com/"),
+        "发布时间": publish_time.strftime("%Y-%m-%d %H:%M") if publish_time else "未知时间",
+        "商品ID": main_data.get("itemId", "未知ID"),
+    }
+
+
+async def _parse_search_results_json(json_data: dict, source: str) -> list:
+    """解析搜索API的JSON数据，返回基础商品信息列表。
+
+    逐商品解析：某个商品字段异常（publishTime 是数字、targetUrl 为 null、价格带"万"却不是数字、
+    clickParam.args 不是 dict……）只跳过它自己并记一行日志，同页其它商品照常返回。
+    只有响应里确实没有 resultList 才返回空列表，上层据此判断翻页结束；
+    之前整页包在一个 try 里，一个坏商品就让整页变空、顺带终止翻页。
+    """
+    items = await safe_get(json_data, "data", "resultList", default=[])
+    if not isinstance(items, list) or not items:
+        print(f"LOG: ({source}) API响应中未找到商品列表 (resultList)。")
+        if AI_DEBUG_MODE:
+            print(f"--- [SEARCH DEBUG] RAW JSON RESPONSE from {source} ---")
+            print(json.dumps(json_data, ensure_ascii=False, indent=2, default=str))
+            print("----------------------------------------------------")
         return []
+
+    page_data = []
+    for index, item in enumerate(items, 1):
+        try:
+            page_data.append(await _parse_search_result_item(item))
+        except Exception as e:
+            print(f"LOG: ({source}) 第 {index}/{len(items)} 个商品解析失败，已跳过: {type(e).__name__}: {e}")
+    print(f"LOG: ({source}) 成功解析到 {len(page_data)} 条商品基础信息。")
+    return page_data
 
 
 # 商品描述最多保留的字符数，防止个别超长描述撑大每次 AI 请求
@@ -163,9 +214,10 @@ def parse_seller_detail(seller_do: dict) -> dict:
         value = _as_count(raw)
         if value is not None:
             facts[key] = value
-    register_ts = _as_count(seller_do.get("registerTime"))
-    if register_ts:
-        facts["卖家注册日期"] = datetime.fromtimestamp(register_ts / 1000).strftime("%Y-%m-%d")
+    # registerTime 多为毫秒，但也见过秒级值；按量级判断，别把秒级值算成 1970 年
+    register_dt = _timestamp_to_datetime(_as_count(seller_do.get("registerTime")))
+    if register_dt:
+        facts["卖家注册日期"] = register_dt.strftime("%Y-%m-%d")
     identity_tags = seller_do.get("identityTags")
     texts = [str(tag.get("text") or "") for tag in identity_tags if isinstance(tag, dict)] if isinstance(identity_tags, list) else []
     real_person = [text for text in texts if "实人认证" in text]
@@ -228,8 +280,11 @@ async def calculate_reputation_from_ratings(ratings_json: list) -> dict:
 async def _parse_user_items_data(items_json: list) -> list:
     """解析用户主页的商品列表API的JSON数据。"""
     parsed_list = []
-    for card in items_json:
-        data = card.get('cardData', {})
+    for card in items_json if isinstance(items_json, list) else []:
+        # 这里抛出的异常会冒到 scrape_user_profile 的 except，整份商品+评价列表一起丢，所以每一层都做类型守卫
+        data = card.get('cardData') if isinstance(card, dict) else None
+        if not isinstance(data, dict):
+            continue
         status_code = data.get('itemStatus')
         if status_code == 0:
             status_text = "在售"
@@ -238,11 +293,13 @@ async def _parse_user_items_data(items_json: list) -> list:
         else:
             status_text = f"未知状态 ({status_code})"
 
+        price_info = data.get('priceInfo')
+        pic_info = data.get('picInfo')
         entry = {
             "商品ID": data.get('id'),
             "商品标题": data.get('title'),
-            "商品价格": data.get('priceInfo', {}).get('price'),
-            "商品主图": data.get('picInfo', {}).get('picUrl'),
+            "商品价格": price_info.get('price') if isinstance(price_info, dict) else None,
+            "商品主图": pic_info.get('picUrl') if isinstance(pic_info, dict) else None,
             "商品状态": status_text
         }
         entry.update(_parse_item_card_labels(data))
@@ -259,11 +316,15 @@ def _parse_item_card_labels(card_data: dict) -> dict:
     标签在 itemLabelDataVO.labelData 的 r1/r2/r3 几行里，缺失的字段不出现。
     """
     extras = {}
+    if not isinstance(card_data, dict):
+        return extras
     tags = []
     original_price = None
     wants = None
     publish_label = None
-    label_data = (card_data.get("itemLabelDataVO") or {}).get("labelData") or {}
+    # itemLabelDataVO / detailParams 偶尔是字符串或列表，直接 .get 会抛 AttributeError
+    label_vo = card_data.get("itemLabelDataVO")
+    label_data = label_vo.get("labelData") if isinstance(label_vo, dict) else None
     rows = label_data.values() if isinstance(label_data, dict) else []
     for row in rows:
         tag_list = row.get("tagList") if isinstance(row, dict) else None
@@ -286,7 +347,8 @@ def _parse_item_card_labels(card_data: dict) -> dict:
                 continue
             if content not in tags:
                 tags.append(content)
-    post_info = str((card_data.get("detailParams") or {}).get("postInfo") or "").strip()
+    detail_params = card_data.get("detailParams")
+    post_info = str(detail_params.get("postInfo") or "").strip() if isinstance(detail_params, dict) else ""
     if post_info and post_info not in tags:
         tags.append(post_info)
     if tags:
@@ -402,16 +464,20 @@ def account_certifications(tags) -> list:
 
 async def parse_user_head_data(head_json: dict) -> dict:
     """解析用户头部API的JSON数据。"""
-    data = head_json.get('data', {})
+    data = head_json.get('data', {}) if isinstance(head_json, dict) else {}
     ylz_tags = await safe_get(data, 'module', 'base', 'ylzTags', default=[])
     seller_credit, buyer_credit = {}, {}
-    for tag in ylz_tags:
+    for tag in ylz_tags if isinstance(ylz_tags, list) else []:
         if await safe_get(tag, 'attributes', 'role') == 'seller':
             seller_credit = {'level': await safe_get(tag, 'attributes', 'level'), 'text': tag.get('text')}
         elif await safe_get(tag, 'attributes', 'role') == 'buyer':
             buyer_credit = {'level': await safe_get(tag, 'attributes', 'level'), 'text': tag.get('text')}
     social = await safe_get(data, 'module', 'social', default={})
     social = social if isinstance(social, dict) else {}
+    # baseInfo.tags 缺失或不是 dict 说明这次没采到认证信息，输出 None；
+    # 空列表留给"采到了、但全部未认证"，下游（seller_profile）据此区分"未采到"和"未认证"
+    account_tags = await safe_get(data, 'baseInfo', 'tags', default=None)
+    certifications = account_certifications(account_tags) if isinstance(account_tags, dict) else None
     return {
         "卖家昵称": await safe_get(data, 'module', 'base', 'displayName'),
         "卖家头像链接": await safe_get(data, 'module', 'base', 'avatar', 'avatar'),
@@ -424,7 +490,7 @@ async def parse_user_head_data(head_json: dict) -> dict:
         "卖家IP属地": str(await safe_get(data, 'module', 'base', 'ipLocation', default='') or '').strip(),
         "卖家粉丝数": _as_count(social.get('followers')),
         "卖家关注数": _as_count(social.get('following')),
-        "卖家认证": account_certifications(await safe_get(data, 'baseInfo', 'tags', default={})),
+        "卖家认证": certifications,
         # 个人档案（性别 / 年龄段）：网页版接口目前不返回，找不到就是空 dict，画像里写“暂无”
         "卖家个人档案": extract_personal_profile(data),
         # 闲鱼标注的经营资质（持证经营 / 个人经营者）：平台自己认定的经营账号，不是经营账号为空串

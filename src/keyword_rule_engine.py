@@ -34,14 +34,42 @@ def _collect_text_fragments(value: Any, bucket: List[str]) -> None:
             _collect_text_fragments(item, bucket)
 
 
+# 关键词规则只看"这件商品"自己的文本。
+# 商品信息只取标题、描述、属性（名和值）、标签；售价、链接、发布时间这类字段不参与匹配。
+# 卖家信息只取单值字段（昵称、个性签名、卖家标签、IP 属地……）；
+# 卖家发布的商品列表 / 卖家收到的评价列表 是别的商品和别人写的评价，
+# 搜 "iPhone 15" 配规则 "256G" 时，卖家另一件挂牌的标题或某条评价提到 256G 不能算本商品命中，
+# 所以列表、字典一律不展平，这两项再按名字显式排除。
+# 商品侧只取这些字段参与关键词 / 黑名单匹配（发货地区保留：黑名单规则可能按地区排除）
+PRODUCT_TEXT_FIELDS = ("商品标题", "商品描述", "商品属性", "商品标签", "发货地区")
+SELLER_EXCLUDED_FIELDS = frozenset({"卖家发布的商品列表", "卖家收到的评价列表"})
+
+
+def _is_scalar_text(value: Any) -> bool:
+    return isinstance(value, (str, int, float)) and not isinstance(value, bool)
+
+
 def build_search_text(record: Dict[str, Any]) -> str:
     fragments: List[str] = []
-    product_info = record.get("商品信息", {})
-    seller_info = record.get("卖家信息", {})
+    product_info = record.get("商品信息") if isinstance(record, dict) else None
+    seller_info = record.get("卖家信息") if isinstance(record, dict) else None
+    product_info = product_info if isinstance(product_info, dict) else {}
+    seller_info = seller_info if isinstance(seller_info, dict) else {}
 
-    _collect_text_fragments(product_info.get("商品标题"), fragments)
-    _collect_text_fragments(product_info, fragments)
-    _collect_text_fragments(seller_info, fragments)
+    for field in PRODUCT_TEXT_FIELDS:
+        value = product_info.get(field)
+        if field == "商品属性" and isinstance(value, dict):
+            # 属性名也要能匹配（"成色"、"品牌"），_collect_text_fragments 对 dict 只取值
+            for key, item in value.items():
+                _collect_text_fragments(key, fragments)
+                _collect_text_fragments(item, fragments)
+            continue
+        _collect_text_fragments(value, fragments)
+
+    for field, value in seller_info.items():
+        if field in SELLER_EXCLUDED_FIELDS or not _is_scalar_text(value):
+            continue
+        _collect_text_fragments(value, fragments)
 
     return normalize_text(" ".join(fragments))
 

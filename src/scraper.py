@@ -60,6 +60,7 @@ from src.services.price_history_service import (
     build_market_reference,
     load_price_snapshots,
     load_sold_listings,
+    parse_price_value,
     record_market_snapshots,
 )
 from src.services.result_storage_service import load_processed_link_keys, mark_notification_status
@@ -345,6 +346,72 @@ def _default_context_options() -> dict:
 
 def _clean_kwargs(options: dict) -> dict:
     return {k: v for k, v in options.items() if v is not None}
+
+
+def filter_items_by_price(items, min_price, max_price, price_key: str = "当前售价") -> list:
+    """本地价格过滤：只保留售价落在 [min_price, max_price] 内的商品。
+
+    站内价格筛选可能没生效（价格输入框没找到、请求超时、筛选响应异常后回退到未筛选结果），
+    这里在逐商品处理前再过滤一次，免得超出价位的商品被抓详情、调 AI、落库、推送。
+    价格解析不出来的商品（空、"价格异常"）保留，交给后续环节判断；上下限写反时自动交换。
+    """
+    item_list = list(items or [])
+    low = parse_price_value(min_price)
+    high = parse_price_value(max_price)
+    if low is None and high is None:
+        return item_list
+    if low is not None and high is not None and low > high:
+        low, high = high, low
+    kept = []
+    for item in item_list:
+        price = parse_price_value(item.get(price_key)) if isinstance(item, dict) else None
+        if price is None:
+            kept.append(item)
+        elif low is not None and price < low:
+            continue
+        elif high is not None and price > high:
+            continue
+        else:
+            kept.append(item)
+    return kept
+
+
+def build_stealth_init_script(context_options: dict) -> str:
+    """按 BrowserContext 的 is_mobile / has_touch 生成反检测脚本，避免指纹自相矛盾。
+
+    - 移动端 UA 下 navigator.plugins 应为空；桌面快照（has_touch=False）下 maxTouchPoints 应为 0。
+      之前写死 plugins=[1..5]、maxTouchPoints=5，和 context 的设备参数对不上。
+    - 不再伪造 window.chrome.loadTimes：新版 Chrome 已移除该方法，有它反而像伪装；
+      真浏览器自带 window.chrome 时也不覆盖。
+    """
+    is_mobile = bool(context_options.get("is_mobile"))
+    has_touch = bool(context_options.get("has_touch"))
+    plugins_js = "[]" if is_mobile else "[1, 2, 3, 4, 5]"
+    max_touch_points = 5 if has_touch else 0
+    return f"""
+        // 移除webdriver标识
+        Object.defineProperty(navigator, 'webdriver', {{get: () => undefined}});
+
+        // navigator 属性和 context 的设备参数保持一致（移动端没有插件）
+        Object.defineProperty(navigator, 'plugins', {{get: () => {plugins_js}}});
+        Object.defineProperty(navigator, 'languages', {{get: () => ['zh-CN', 'zh', 'en-US', 'en']}});
+
+        // 真浏览器自带 window.chrome 就不动；补的时候只给 runtime / csi，不伪造已被新版 Chrome 移除的方法
+        if (!window.chrome) {{
+            window.chrome = {{runtime: {{}}, csi: function() {{}}}};
+        }}
+
+        // 触摸点数和 has_touch 一致
+        Object.defineProperty(navigator, 'maxTouchPoints', {{get: () => {max_touch_points}}});
+
+        // 覆盖permissions查询（避免暴露自动化）
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+                Promise.resolve({{state: Notification.permission}}) :
+                originalQuery(parameters)
+        );
+    """
 
 
 def _looks_like_mobile(ua: str) -> Optional[bool]:
@@ -724,29 +791,8 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 notification_status_writer=mark_notification_status,
             )
 
-            # 增强反检测脚本（模拟真实移动设备）
-            await context.add_init_script("""
-                // 移除webdriver标识
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-
-                // 模拟真实移动设备的navigator属性
-                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en-US', 'en']});
-
-                // 添加chrome对象
-                window.chrome = {runtime: {}, loadTimes: function() {}, csi: function() {}};
-
-                // 模拟触摸支持
-                Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 5});
-
-                // 覆盖permissions查询（避免暴露自动化）
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ?
-                        Promise.resolve({state: Notification.permission}) :
-                        originalQuery(parameters)
-                );
-            """)
+            # 增强反检测脚本：按 context 的 is_mobile / has_touch 生成，和设备参数保持一致
+            await context.add_init_script(build_stealth_init_script(context_kwargs))
 
             page = await context.new_page()
 
@@ -870,10 +916,10 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                         final_response = await response_info.value
                     except PlaywrightTimeoutError:
                         log_time(
-                            f"新发布筛选 '{new_publish_option}' 请求超时，继续执行。"
+                            f"[警告] 新发布筛选 '{new_publish_option}' 请求超时，该筛选未生效，继续执行。"
                         )
                     except Exception as e:
-                        print(f"LOG: 应用新发布筛选失败: {e}")
+                        log_time(f"[警告] 应用新发布筛选失败，该筛选未生效: {e}")
 
                 if personal_only:
                     async with page.expect_response(
@@ -893,9 +939,9 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                             await random_sleep(2, 4)
                         final_response = await response_info.value
                     except PlaywrightTimeoutError:
-                        log_time("包邮筛选请求超时，继续执行。")
+                        log_time("[警告] 包邮筛选请求超时，该筛选未生效，继续执行。")
                     except Exception as e:
-                        print(f"LOG: 应用包邮筛选失败: {e}")
+                        log_time(f"[警告] 应用包邮筛选失败，该筛选未生效: {e}")
 
                 if region_filter:
                     try:
@@ -987,7 +1033,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                         await random_sleep(2, 3)
                                     final_response = await response_info.value
                                 except PlaywrightTimeoutError:
-                                    log_time("区域筛选提交超时，继续执行。")
+                                    log_time("[警告] 区域筛选提交超时，该筛选未生效，继续执行。")
                             else:
                                 print(
                                     "LOG: 未找到区域弹窗的“查看XX件宝贝”按钮，跳过提交。"
@@ -995,41 +1041,73 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                         else:
                             print("LOG: 未找到区域筛选触发器。")
                     except PlaywrightTimeoutError:
-                        log_time(f"区域筛选 '{region_filter}' 请求超时，继续执行。")
+                        log_time(f"[警告] 区域筛选 '{region_filter}' 请求超时，该筛选未生效，继续执行。")
                     except Exception as e:
-                        print(f"LOG: 应用区域筛选 '{region_filter}' 失败: {e}")
+                        log_time(f"[警告] 应用区域筛选 '{region_filter}' 失败，该筛选未生效: {e}")
 
+                # 站内价格筛选是否真的生效；没生效时下面用 filter_items_by_price 本地兜底
+                price_filter_applied = False
                 if min_price or max_price:
-                    price_container = page.locator(
-                        'div[class*="search-price-input-container"]'
-                    ).first
-                    if await price_container.is_visible():
-                        if min_price:
-                            await price_container.get_by_placeholder("¥").first.fill(
-                                min_price
-                            )
-                            # --- 修改: 将固定等待改为随机等待 ---
-                            await random_sleep(1, 2.5)  # 原来是 asyncio.sleep(5)
-                        if max_price:
-                            await (
-                                price_container.get_by_placeholder("¥")
-                                .nth(1)
-                                .fill(max_price)
-                            )
-                            # --- 修改: 将固定等待改为随机等待 ---
-                            await random_sleep(1, 2.5)  # 原来是 asyncio.sleep(5)
+                    try:
+                        price_container = page.locator(
+                            'div[class*="search-price-input-container"]'
+                        ).first
+                        if await price_container.is_visible():
+                            if min_price:
+                                await price_container.get_by_placeholder("¥").first.fill(
+                                    str(min_price)
+                                )
+                                # --- 修改: 将固定等待改为随机等待 ---
+                                await random_sleep(1, 2.5)  # 原来是 asyncio.sleep(5)
+                            if max_price:
+                                await (
+                                    price_container.get_by_placeholder("¥")
+                                    .nth(1)
+                                    .fill(str(max_price))
+                                )
+                                # --- 修改: 将固定等待改为随机等待 ---
+                                await random_sleep(1, 2.5)  # 原来是 asyncio.sleep(5)
 
-                        async with page.expect_response(
-                            is_search_results_response, timeout=20000
-                        ) as response_info:
-                            await page.keyboard.press("Tab")
-                            # --- 修改: 增加确认价格后的等待时间 ---
-                            await random_sleep(2, 4)  # 原来是 asyncio.sleep(5)
-                        final_response = await response_info.value
-                    else:
-                        print("LOG: 警告 - 未找到价格输入容器。")
+                            async with page.expect_response(
+                                is_search_results_response, timeout=20000
+                            ) as response_info:
+                                await page.keyboard.press("Tab")
+                                # --- 修改: 增加确认价格后的等待时间 ---
+                                await random_sleep(2, 4)  # 原来是 asyncio.sleep(5)
+                            final_response = await response_info.value
+                            price_filter_applied = bool(final_response and final_response.ok)
+                        else:
+                            log_time("[警告] 未找到价格输入容器，站内价格筛选未生效。")
+                    except PlaywrightTimeoutError as e:
+                        if _is_login_url(page.url):
+                            raise LoginRequiredError(
+                                f"Login required: redirected to {page.url} (cookies/state likely expired)"
+                            ) from e
+                        log_time("[警告] 价格筛选请求超时，站内价格筛选未生效。")
 
                 log_time("所有筛选已完成，开始处理商品列表...")
+
+                # 筛选失败不能再静默回退：以前 final_response 为 None 或 !ok 时直接用 initial_response，
+                # 处理的是未过滤的全量结果，超出价位的商品照样抓详情、调 AI、落库、推送
+                filters_requested = bool(
+                    new_publish_option
+                    or personal_only
+                    or free_shipping
+                    or region_filter
+                    or min_price
+                    or max_price
+                )
+                if final_response is not None and not final_response.ok:
+                    log_time(
+                        f"[警告] 筛选后的搜索响应异常 (HTTP {final_response.status})，回退到未筛选的初始结果。"
+                    )
+                elif filters_requested and final_response is None:
+                    log_time("[警告] 所有筛选都未拿到有效响应，回退到未筛选的初始结果。")
+                if (min_price or max_price) and not price_filter_applied:
+                    log_time(
+                        f"[警告] 价格筛选未生效，已改用本地过滤：只处理售价在 "
+                        f"{min_price or '不限'} ~ {max_price or '不限'} 内的商品。"
+                    )
 
                 current_response = (
                     final_response
@@ -1059,6 +1137,17 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                     )
                     if not basic_items:
                         break
+                    # 本地价格过滤：不管站内价格筛选有没有生效都过一遍，
+                    # 超出价位的商品不再抓详情、调 AI、落库、推送，也不计入价格统计
+                    if min_price or max_price:
+                        in_range_items = filter_items_by_price(basic_items, min_price, max_price)
+                        dropped_by_price = len(basic_items) - len(in_range_items)
+                        if dropped_by_price:
+                            log_time(
+                                f"第 {page_num} 页 {len(basic_items)} 个商品中有 {dropped_by_price} 个售价不在 "
+                                f"{min_price or '不限'} ~ {max_price or '不限'} 区间内，已本地过滤。"
+                            )
+                        basic_items = in_range_items
                     # 价格快照和市场参考只统计通过标题预筛选的商品，
                     # 否则搜不到结果时闲鱼塞进来的推荐手机会把均价和性价比评分带偏
                     market_items = filter_items_by_title(

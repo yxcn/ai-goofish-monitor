@@ -238,17 +238,27 @@ class FailureGuard:
         last_notified_date = entry.get("last_notified_date")
 
         previous_cookie_mtime = entry.get("cookie_mtime")
-        if cookie_path and previous_cookie_mtime is not None:
+        if previous_cookie_mtime is not None:
             try:
                 previous_cookie_mtime = float(previous_cookie_mtime)
             except (TypeError, ValueError):
                 previous_cookie_mtime = None
 
+        # 比对 mtime 必须用记录失败时实际使用的那个登录态文件（rotate 模式下是池里的某个文件），
+        # 调用方传进来的路径只在记录里没有时兜底。否则根 state.json 比池文件新就会被当成
+        # "已更新"而误解除暂停；而 auto 模式下调用方传 None 时，用户更新池文件也永远恢复不了。
+        recorded_cookie_path = entry.get("cookie_path")
+        effective_cookie_path = (
+            recorded_cookie_path
+            if isinstance(recorded_cookie_path, str) and recorded_cookie_path.strip()
+            else cookie_path
+        )
+
         if (
             paused_until
             and paused_until > current
-            and cookie_path
-            and _cookie_changed(cookie_path, previous_cookie_mtime)
+            and effective_cookie_path
+            and _cookie_changed(effective_cookie_path, previous_cookie_mtime)
         ):
             # cookies / 登录态更新 => 自动恢复
             self.record_success(task_key, now=current)
@@ -321,7 +331,12 @@ class FailureGuard:
             except (TypeError, ValueError):
                 prev_mtime = None
 
-            if cookie_path and _cookie_changed(cookie_path, prev_mtime):
+            # 只有和上次记录的是同一个文件、且它变新了，才算"用户更新了登录态"并清零计数。
+            # rotate 模式下每次随机选到不同的池文件，拿另一个文件的 mtime 比较没有意义，
+            # 否则换到一个更新的文件就把连续失败清零，熔断永远开不了。
+            recorded_path = entry.get("cookie_path")
+            same_file = not recorded_path or recorded_path == cookie_path
+            if cookie_path and same_file and _cookie_changed(cookie_path, prev_mtime):
                 entry["consecutive_failures"] = 0
                 entry["paused_until"] = None
                 entry["last_notified_date"] = None
@@ -331,6 +346,9 @@ class FailureGuard:
             entry["last_failure_reason"] = (reason or "未知错误")[:1000]
             entry["last_failure_at"] = _dt_to_str(current)
             if cookie_path:
+                if recorded_path != cookie_path:
+                    # 换了文件，旧 mtime 不再有参考意义
+                    entry["cookie_mtime"] = None
                 entry["cookie_path"] = cookie_path
                 if cookie_mtime is not None:
                     entry["cookie_mtime"] = cookie_mtime
