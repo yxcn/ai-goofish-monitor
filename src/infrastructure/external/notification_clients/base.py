@@ -39,6 +39,14 @@ class NotificationMessage:
     criteria_summary: Optional[str] = None
     # AI 对性价比的一句话评价
     value_summary: Optional[str] = None
+    # 页面上的划线原价（和现价相同或缺失时为 None）
+    original_price: Optional[str] = None
+    # 商品标签，如 包邮、验货宝
+    tags: tuple[str, ...] = ()
+    wants_count: Optional[int] = None
+    view_count: Optional[int] = None
+    publish_time: Optional[str] = None
+    region: Optional[str] = None
 
 
 def split_risk_tags(tags: Iterable | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -102,6 +110,63 @@ def summarize_criteria(analysis: dict | None) -> tuple[int, int, int]:
     return passed, check, failed
 
 
+def _as_int(value) -> Optional[int]:
+    """“想要”人数 / 浏览量 可能是数字，也可能是 'NaN'、'-' 这类占位符。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_text(value) -> Optional[str]:
+    text = str(value or "").strip()
+    return text if text and text not in {"暂无", "-", "N/A", "NaN"} else None
+
+
+def listing_facts(product_data: Dict) -> dict:
+    """从商品信息里取页面上那几个展示字段：原价、标签、想要、浏览、发布时间、发货地。"""
+    price = _clean_text(product_data.get("当前售价"))
+    original_price = _clean_text(product_data.get("商品原价"))
+    if original_price and price and _normalize_price(original_price) == _normalize_price(price):
+        original_price = None
+    tags = tuple(
+        dict.fromkeys(t for t in (_clean_text(tag) for tag in (product_data.get("商品标签") or [])) if t)
+    )
+    return {
+        "original_price": original_price,
+        "tags": tags,
+        "wants_count": _as_int(product_data.get("“想要”人数")),
+        "view_count": _as_int(product_data.get("浏览量")),
+        "publish_time": _clean_text(product_data.get("发布时间")),
+        "region": _clean_text(product_data.get("发货地区")),
+    }
+
+
+def describe_popularity(facts: dict) -> Optional[str]:
+    """如 '8 人想要 · 208 次浏览 · 11-05 12:29 发布 · 山东'。"""
+    parts = []
+    if facts.get("wants_count") is not None:
+        parts.append(f"{facts['wants_count']} 人想要")
+    if facts.get("view_count") is not None:
+        parts.append(f"{facts['view_count']} 次浏览")
+    if facts.get("publish_time"):
+        parts.append(f"{_short_time(facts['publish_time'])} 发布")
+    if facts.get("region"):
+        parts.append(facts["region"])
+    return " · ".join(parts) if parts else None
+
+
+def _normalize_price(text: str) -> str:
+    return "".join(ch for ch in str(text) if ch.isdigit() or ch == ".")
+
+
+def _short_time(text: str) -> str:
+    # '2026-11-05 12:29' -> '11-05 12:29'
+    return text[5:] if len(text) >= 16 and text[4] == "-" and text[:4].isdigit() else text
+
+
 def describe_criteria(counts: tuple[int, int, int]) -> Optional[str]:
     passed, check, failed = counts
     parts = []
@@ -159,6 +224,14 @@ class NotificationClient(ABC):
         score = match_score(analysis)
         criteria_summary = describe_criteria(summarize_criteria(analysis))
         value_summary = str(analysis.get("value_summary") or "").strip() or None
+        facts = listing_facts(product_data)
+        popularity = describe_popularity(facts)
+
+        price_line = f"价格: {price}"
+        if facts["original_price"]:
+            price_line += f"（原价 {facts['original_price']}）"
+        if facts["tags"]:
+            price_line += " " + " · ".join(facts["tags"])
 
         content_lines = []
         if verdict:
@@ -167,7 +240,9 @@ class NotificationClient(ABC):
             )
         if criteria_summary:
             content_lines.append(f"标准: {criteria_summary}")
-        content_lines.append(f"价格: {price}")
+        content_lines.append(price_line)
+        if popularity:
+            content_lines.append(f"热度: {popularity}")
         content_lines.append(f"原因: {reason}")
         if value_summary:
             content_lines.append(f"性价比: {value_summary}")
@@ -207,4 +282,10 @@ class NotificationClient(ABC):
             match_score=score,
             criteria_summary=criteria_summary,
             value_summary=value_summary,
+            original_price=facts["original_price"],
+            tags=facts["tags"],
+            wants_count=facts["wants_count"],
+            view_count=facts["view_count"],
+            publish_time=facts["publish_time"],
+            region=facts["region"],
         )

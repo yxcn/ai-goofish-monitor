@@ -254,7 +254,7 @@ def test_telegram_client_renders_checklist_and_escapes_html(monkeypatch):
     assert captured["json"]["parse_mode"] == "HTML"
     text = captured["json"]["text"]
     assert "<b>ThinkPad &lt;T14&gt; &amp; 配件</b>" in text
-    assert "⭐ 结论: <b>有条件推荐</b> · AI 匹配度 58%\n📋 标准: 3 项通过，1 项待确认\n💰 价格: 1850" in text
+    assert "⭐ 结论: <b>有条件推荐</b> · AI 匹配度 58%\n📋 标准: 3 项通过，1 项待确认\n💰 价格: <b>1850</b>\n📝 原因" in text
     assert "📝 原因: 有条件推荐：&lt;配置&gt;符合\n💹 性价比: 1494元比当前搜索样本均价低约7%" in text
     assert "⚠️ 注意:\n• 图片显示为T14s，并非标题所写T14" in text
     assert "❓ 聊卖家前需确认:\n1. 电池健康度和循环次数\n2. 维修、拆换件及进水历史" in text
@@ -293,3 +293,60 @@ def test_telegram_client_redacts_bot_token_from_network_errors(monkeypatch):
         asyncio.run(client.send(_product(), "价格合适"))
     assert "secret-token" not in str(excinfo.value)
     assert "/bot***/sendMessage" in str(excinfo.value)
+
+
+def _listing_with_facts():
+    return {
+        **_product(),
+        "当前售价": "¥1494",
+        "商品原价": "¥2300",
+        "商品标签": ["包邮", "验货宝", "包邮", ""],
+        "“想要”人数": 8,
+        "浏览量": "208",
+        "发布时间": "2026-11-05 12:29",
+        "发货地区": "山东",
+    }
+
+
+def test_build_message_includes_listing_facts():
+    message = _OkClient(enabled=True, pcurl_to_mobile=False)._build_message(_listing_with_facts(), "价格合适")
+    assert message.original_price == "¥2300"
+    assert message.tags == ("包邮", "验货宝")
+    assert (message.wants_count, message.view_count) == (8, 208)
+    assert message.content.startswith(
+        "价格: ¥1494（原价 ¥2300） 包邮 · 验货宝\n"
+        "热度: 8 人想要 · 208 次浏览 · 11-05 12:29 发布 · 山东\n"
+        "原因: 价格合适\n"
+    )
+
+
+def test_listing_facts_skip_placeholders_and_same_original_price():
+    from src.infrastructure.external.notification_clients.base import listing_facts
+
+    facts = listing_facts(
+        {"当前售价": "¥1494", "商品原价": "1494", "商品标签": [], "“想要”人数": "NaN", "浏览量": "-", "发布时间": "", "发货地区": "暂无"}
+    )
+    assert facts == {
+        "original_price": None, "tags": (), "wants_count": None, "view_count": None, "publish_time": None, "region": None,
+    }
+
+
+def test_telegram_client_renders_listing_facts(monkeypatch):
+    from src.infrastructure.external.notification_clients.telegram_client import TelegramClient
+
+    captured = {}
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True}
+
+    monkeypatch.setattr("requests.post", lambda url, json=None, headers=None, timeout=None: captured.update(json=json) or _FakeResponse())
+    client = TelegramClient("123:token", "4567", pcurl_to_mobile=False)
+
+    asyncio.run(client.send(_listing_with_facts(), "价格合适"))
+
+    text = captured["json"]["text"]
+    assert "💰 价格: <b>¥1494</b> <s>¥2300</s> · 包邮 · 验货宝\n👀 8 人想要 · 208 次浏览 · 11-05 12:29 发布 · 山东\n📝 原因: 价格合适" in text
