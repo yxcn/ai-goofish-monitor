@@ -311,6 +311,84 @@ ACCOUNT_TAG_LABELS = (
 )
 
 
+# “个人档案”（性别、年龄段）目前只在 App 里展示，网页版头部接口抓了 15 个卖家都没有这些字段。
+# 这里按可能的键名做一次尽力提取，接口哪天带上了就能直接用；找不到就返回空，画像里写“暂无”。
+_PROFILE_GENDER_KEYS = {"gender", "sex", "usergender", "gendertext", "性别"}
+_PROFILE_AGE_KEYS = {"age", "agerange", "agegroup", "agetext", "birthyear", "birthday", "年龄", "年龄段"}
+_AGE_BAND_PATTERN = re.compile(r"^(\d{2})\s*后$")
+_YEAR_PATTERN = re.compile(r"^(19|20)(\d{2})")
+
+
+def _normalize_gender(value) -> str:
+    text = str(value if value is not None else "").strip()
+    lowered = text.lower()
+    if lowered in {"1", "m", "male", "男", "boy", "man"}:
+        return "男"
+    if lowered in {"2", "f", "female", "女", "girl", "woman"}:
+        return "女"
+    if lowered in {"", "0", "unknown", "none", "null", "保密", "未知"}:
+        return ""
+    return text[:10]
+
+
+def _normalize_age_band(value) -> str:
+    text = str(value if value is not None else "").strip()
+    band = _AGE_BAND_PATTERN.match(text)
+    if band:
+        return f"{band.group(1)}后"
+    year = _YEAR_PATTERN.match(text)
+    if year:
+        return f"{year.group(2)[0]}0后"
+    return text[:10] if text and text.lower() not in {"0", "unknown", "none", "null", "保密"} else ""
+
+
+def extract_personal_profile(payload, depth: int = 0) -> dict:
+    """在头部接口返回里找性别 / 年龄段字段（递归，最多 6 层，跳过商品列表那类大数组）。"""
+    found = {}
+    if depth > 6:
+        return found
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            lowered = str(key).lower()
+            if lowered in _PROFILE_GENDER_KEYS and "性别" not in found:
+                gender = _normalize_gender(value)
+                if gender:
+                    found["性别"] = gender
+            elif lowered in _PROFILE_AGE_KEYS and "年龄段" not in found:
+                age = _normalize_age_band(value)
+                if age:
+                    found["年龄段"] = age
+            elif isinstance(value, (dict, list)):
+                for k, v in extract_personal_profile(value, depth + 1).items():
+                    found.setdefault(k, v)
+    elif isinstance(payload, list):
+        for entry in payload[:5]:
+            for k, v in extract_personal_profile(entry, depth + 1).items():
+                found.setdefault(k, v)
+    return found
+
+
+# 主页头部接口的 module.shop.businessQuality.type：闲鱼给经营账号标的资质。
+# 抓到的两种：licensedOperation（持证经营，跳营业执照页）、selfEmployed（个人经营者，跳经营者信息公示页）
+BUSINESS_QUALITY_LABELS = {
+    "licensedoperation": "持证经营",
+    "selfemployed": "个人经营者",
+}
+
+
+def business_quality_label(shop_module) -> str:
+    """把 businessQuality.type 转成中文标签；不是经营账号返回空串。"""
+    if not isinstance(shop_module, dict):
+        return ""
+    quality = shop_module.get("businessQuality")
+    if not isinstance(quality, dict):
+        return ""
+    raw = str(quality.get("type") or "").strip()
+    if not raw:
+        return ""
+    return BUSINESS_QUALITY_LABELS.get(raw.lower(), raw)
+
+
 def account_certifications(tags) -> list:
     """把头部接口的账号标识转成认证名称列表，只保留值为真的。"""
     if not isinstance(tags, dict):
@@ -347,6 +425,10 @@ async def parse_user_head_data(head_json: dict) -> dict:
         "卖家粉丝数": _as_count(social.get('followers')),
         "卖家关注数": _as_count(social.get('following')),
         "卖家认证": account_certifications(await safe_get(data, 'baseInfo', 'tags', default={})),
+        # 个人档案（性别 / 年龄段）：网页版接口目前不返回，找不到就是空 dict，画像里写“暂无”
+        "卖家个人档案": extract_personal_profile(data),
+        # 闲鱼标注的经营资质（持证经营 / 个人经营者）：平台自己认定的经营账号，不是经营账号为空串
+        "卖家经营资质": business_quality_label(await safe_get(data, 'module', 'shop', default={})),
     }
 
 

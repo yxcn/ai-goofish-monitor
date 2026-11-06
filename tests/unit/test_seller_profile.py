@@ -49,15 +49,18 @@ def test_thin_personal_seller_is_not_called_a_dealer():
     profile = build_seller_profile(_thin_personal_seller_record(), now=NOW)
 
     assert profile["摘要"] == "x***7（山东 淄博 · IP 属地山东省，与发货地一致）"
-    assert profile["身份"] == "来闲鱼2年7个月（2024-04-18 注册） · 实名认证、实人认证 · 芝麻信用未公开"
+    assert profile["身份"] == "来闲鱼2年7个月（2024-04-18 注册） · 个人档案：暂无 · 实名认证、实人认证 · 芝麻信用未公开"
     assert profile["活跃"] == "21分钟前来过 · 24 小时回复率 100% · 平均 3分钟回复 · 粉丝 0"
     assert profile["交易"] == "在售 1 / 已售 0 · 卖出过 0 件 · 同类在售 1、已售 0（笔记本电脑） · 在售只有本商品 · 本商品48小时内发布"
     assert profile["历史"] == "作为卖家没有收到过评价 · 作为买家 1 条评价（2026-10-26）"
     assert profile["口碑"] == "作为卖家暂无评价 · 作为买家 1/1 好评 · 最近一条 2026-10-26（评价者来自湖北）"
-    assert profile["结论"] == "可见记录无商家迹象，按个人卖家对待；无卖家口碑，建议验货宝或担保交易；卖家在线且回复及时"
+    assert profile["结论"] == "可见记录无商家迹象，按个人卖家对待；没有任何出售记录，按新人卖家对待，建议验货宝或担保交易；卖家在线且回复及时"
     assert profile["商家判断"] == "个人"
     assert profile["商家迹象"] == []
-    assert profile["信号"] == ["⚠️ 卖家零评价", "✅ 认证齐全", "✅ IP 属地与发货地一致", "✅ 回复快"]
+    assert profile["新人卖家"] is True
+    assert profile["个人档案"] == {"性别": "暂无", "年龄段": "暂无"}
+    assert profile["经营资质"] == "无"
+    assert profile["信号"] == ["⚠️ 新人卖家（无出售记录）", "⚠️ 卖家零评价", "✅ 认证齐全", "✅ IP 属地与发货地一致", "✅ 回复快"]
     assert profile["指标"]["同类在售"] == 1 and profile["指标"]["注册天数"] == 932
 
 
@@ -124,6 +127,7 @@ def test_new_account_with_mismatched_ip_and_no_certification_is_flagged():
     assert "未见实名/实人认证" in profile["身份"]
     assert profile["信号"] == [
         "⚠️ 新号（注册 20 天）",
+        "⚠️ 新人卖家（无出售记录）",
         "⚠️ 卖家零评价",
         "⚠️ IP 属地（广东省）与发货地（淄博）不一致",
         "⚠️ 未见实名/实人认证",
@@ -161,6 +165,42 @@ def test_old_records_without_new_fields_still_get_a_profile():
     assert profile["商家判断"] == "个人"
     assert profile["口碑"] == "作为卖家 1/1 好评（100%） · 最近一条 2026-01-01"
     assert profile["信号"] == []
+    assert profile["新人卖家"] is False
+
+
+def test_platform_business_label_overrides_everything_else():
+    # “本本匠数码”这类：2 件在售、0 评价，但闲鱼标注了个人经营者 → 不是新人，是商家
+    record = _thin_personal_seller_record()
+    record["卖家信息"].update({"卖家经营资质": "个人经营者", "卖家收到的评价列表": []})
+    profile = build_seller_profile(record, now=NOW)
+
+    assert profile["商家判断"] == "商家" and profile["新人卖家"] is False
+    assert profile["结论"].startswith("商家（闲鱼标注为个人经营者）；无卖家口碑")
+    assert profile["商家迹象"] == ["闲鱼标注为个人经营者"]
+    assert profile["信号"][0] == "⚠️ 闲鱼标注个人经营者"
+    assert "经营资质：个人经营者" in profile["身份"]
+    assert profile["经营资质"] == "个人经营者"
+
+
+def test_personal_archive_shows_up_in_summary_and_identity():
+    record = _thin_personal_seller_record()
+    record["卖家信息"]["卖家个人档案"] = {"性别": "女", "年龄段": "90后"}
+    profile = build_seller_profile(record, now=NOW)
+    assert profile["摘要"].startswith("x***7（女 · 90后 · 山东 淄博")
+    assert "个人档案：女 · 90后" in profile["身份"]
+    assert profile["个人档案"] == {"性别": "女", "年龄段": "90后"}
+
+    record["卖家信息"]["卖家个人档案"] = {"年龄段": "00后"}
+    assert "个人档案：性别暂无 · 00后" in build_seller_profile(record, now=NOW)["身份"]
+
+
+def test_newcomer_needs_a_clean_history_not_just_a_young_account():
+    record = _thin_personal_seller_record()
+    record["卖家信息"]["卖家收到的评价列表"] = [_rating("买家", "2026-10-01"), _rating("买家", "2026-10-02")]
+    assert build_seller_profile(record, now=NOW)["新人卖家"] is False  # 买过两次以上就不算干净
+    record["卖家信息"]["卖家收到的评价列表"] = []
+    record["卖家信息"]["卖家卖出件数"] = 3
+    assert build_seller_profile(record, now=NOW)["新人卖家"] is False  # 卖出过东西
 
 
 def test_category_mix_groups_titles_and_reports_focus():

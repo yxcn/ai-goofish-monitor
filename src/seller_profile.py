@@ -98,11 +98,30 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
     sold_total = _count(seller.get("卖家卖出件数"))
     reg_days = _count(seller.get("卖家注册天数"))
     followers = _count(seller.get("卖家粉丝数"))
+    # 闲鱼标注的经营资质（持证经营 / 个人经营者）：平台自己认定的经营账号，比任何行为推断都硬
+    business = _clean(seller.get("卖家经营资质"), {"无"})
+
+    # 个人档案：性别 / 年龄段，接口没给就写“暂无”
+    archive = seller.get("卖家个人档案") if isinstance(seller.get("卖家个人档案"), dict) else {}
+    gender = _clean(archive.get("性别"))
+    age_band = _clean(archive.get("年龄段"))
+
+    # 新人卖家：历史很干净——作为卖家没有评价、没有已售、没卖出过东西（买家评价最多 1 条）
+    newcomer = (
+        has_profile
+        and not business
+        and not seller_ratings
+        and not sold
+        and (sold_total or 0) == 0
+        and len(buyer_ratings) <= 1
+    )
 
     # --- 商家迹象 ---
     strong: list[str] = []
     weak: list[str] = []
     similar_label = category_label or (record.get("搜索关键字") or "同类")
+    if business:
+        strong.append(f"闲鱼标注为{business}")
     if len(similar_on_sale) >= SIMILAR_ON_SALE_STRONG:
         strong.append(f"同时在售 {len(similar_on_sale)} 件同类商品（{similar_label}，含本商品）")
     if len(similar_sold) >= SIMILAR_SOLD_STRONG:
@@ -122,6 +141,9 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
     if not has_profile:
         identity_verdict = "卖家资料未采集，无法判断是否商家"
         dealer_level = "未知"
+    elif business:
+        identity_verdict = f"商家（闲鱼标注为{business}）" + ("：" + "；".join(evidence[1:]) if len(evidence) > 1 else "")
+        dealer_level = "商家"
     elif len(strong) >= 2:
         identity_verdict = "商家特征明显：" + "；".join(evidence)
         dealer_level = "商家"
@@ -154,7 +176,9 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
 
     # --- 信号 ---
     signals: list[str] = []
-    if dealer_level == "商家":
+    if business:
+        signals.append(f"⚠️ 闲鱼标注{business}")
+    elif dealer_level == "商家":
         signals.append("⚠️ 商家特征明显")
     elif dealer_level == "疑似商家":
         signals.append("⚠️ 疑似商家")
@@ -162,6 +186,8 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
         signals.append(f"⚠️ 此前已售 {len(similar_sold)} 件同类")
     if reg_days is not None and reg_days < NEW_ACCOUNT_DAYS:
         signals.append(f"⚠️ 新号（注册 {reg_days} 天）")
+    if newcomer:
+        signals.append("⚠️ 新人卖家（无出售记录）")
     if has_profile and not seller_ratings:
         signals.append("⚠️ 卖家零评价")
     if seller_negative:
@@ -183,6 +209,8 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
 
     # --- 各行文字 ---
     summary_parts = [str(seller.get("卖家昵称") or item.get("卖家昵称") or "匿名卖家")]
+    if gender or age_band:
+        summary_parts.append(" · ".join(part for part in (gender, age_band) if part))
     if city or region:
         summary_parts.append(_join_place(region, city))
     if ip_location:
@@ -195,6 +223,12 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
     reg_date = _clean(seller.get("卖家注册日期"))
     if reg_text or reg_date:
         identity_parts.append((reg_text or "注册时间未知") + (f"（{reg_date} 注册）" if reg_date else ""))
+    if gender or age_band:
+        identity_parts.append(f"个人档案：{gender or '性别暂无'} · {age_band or '年龄段暂无'}")
+    elif has_profile:
+        identity_parts.append("个人档案：暂无")
+    if business:
+        identity_parts.append(f"经营资质：{business}")
     if certs:
         identity_parts.append("、".join(certs))
     elif certs is not None:
@@ -267,7 +301,9 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
     conclusion = [identity_verdict]
     if reg_days is not None and reg_days < NEW_ACCOUNT_DAYS:
         conclusion.append(f"注册仅 {reg_days} 天的新号")
-    if has_profile and not seller_ratings:
+    if newcomer:
+        conclusion.append("没有任何出售记录，按新人卖家对待，建议验货宝或担保交易")
+    elif has_profile and not seller_ratings:
         conclusion.append("无卖家口碑，建议验货宝或担保交易")
     elif seller_negative:
         conclusion.append(f"有 {seller_negative} 条差评，先看评价内容")
@@ -289,6 +325,9 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
         "商家判断": dealer_level,
         "商家迹象": evidence,
         "信号": signals,
+        "新人卖家": newcomer,
+        "经营资质": business or "无",
+        "个人档案": {"性别": gender or "暂无", "年龄段": age_band or "暂无"},
         "品类分布": mix,
         "指标": {
             "在售": len(on_sale),

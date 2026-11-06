@@ -126,3 +126,28 @@ def test_seller_detail_parser_omits_missing_fields():
     assert parse_seller_detail({}) == {}
     assert parse_seller_detail(None) == {}
     assert parse_seller_detail({"identityTags": [{"text": "实人认证未通过"}], "registerTime": "oops"}) == {"卖家实人认证": False}
+
+
+def test_head_parser_extracts_business_quality_and_personal_archive():
+    from src.parsers import business_quality_label, extract_personal_profile
+
+    head_json = {
+        "data": {
+            "module": {
+                "base": {"displayName": "本本匠数码"},
+                "shop": {"businessQuality": {"type": "selfEmployed", "targetUrl": ["https://hammurapi.taobao.com/x"]}},
+            }
+        }
+    }
+    head = asyncio.run(parse_user_head_data(head_json))
+    assert head["卖家经营资质"] == "个人经营者"
+    assert head["卖家个人档案"] == {}
+    assert business_quality_label({"businessQuality": {"type": "licensedOperation"}}) == "持证经营"
+    assert business_quality_label({"businessQuality": {"type": "somethingNew"}}) == "somethingNew"
+    assert business_quality_label({}) == "" and business_quality_label(None) == ""
+
+    # 个人档案字段目前接口不返回；这里按可能的键名做尽力提取
+    assert extract_personal_profile({"module": {"profile": {"gender": 2, "ageRange": "90后"}}}) == {"性别": "女", "年龄段": "90后"}
+    assert extract_personal_profile({"base": {"sex": "male", "birthYear": "1998"}}) == {"性别": "男", "年龄段": "90后"}
+    assert extract_personal_profile({"base": {"gender": 0, "age": "保密"}}) == {}
+    assert extract_personal_profile({"page": {"pageNumber": 1}, "items": [{"age": "80后"}]}) == {"年龄段": "80后"}
