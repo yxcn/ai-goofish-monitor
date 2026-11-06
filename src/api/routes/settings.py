@@ -9,6 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from src.api.dependencies import get_process_service
+from src.core.path_safety import (
+    normalize_url_for_compare,
+    validate_proxy_pool,
+    validate_proxy_url,
+    validate_relative_dir,
+    validate_url_scheme,
+)
 from src.infrastructure.config.env_manager import env_manager
 from src.infrastructure.config.settings import (
     AISettings,
@@ -204,6 +211,16 @@ async def get_rotation_settings():
 async def update_rotation_settings(settings: RotationSettingsModel):
     updates = {}
     payload = model_dump(settings, exclude_unset=True)
+    try:
+        if "ACCOUNT_STATE_DIR" in payload:
+            # 账号接口会在这个目录下读写删 *.json，放开绝对路径等于任意目录文件操作
+            payload["ACCOUNT_STATE_DIR"] = validate_relative_dir(
+                payload["ACCOUNT_STATE_DIR"], field_label="ACCOUNT_STATE_DIR", default="state"
+            )
+        if "PROXY_POOL" in payload:
+            payload["PROXY_POOL"] = validate_proxy_pool(payload["PROXY_POOL"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     for key, value in payload.items():
         if isinstance(value, bool):
             updates[key] = _normalize_bool_value(value)
@@ -269,6 +286,13 @@ async def get_ai_settings():
 @router.put("/ai")
 async def update_ai_settings(settings: AISettingsModel):
     updates = {}
+    try:
+        if settings.OPENAI_BASE_URL is not None:
+            settings.OPENAI_BASE_URL = validate_url_scheme(settings.OPENAI_BASE_URL, field_label="OPENAI_BASE_URL")
+        if settings.PROXY_URL is not None:
+            settings.PROXY_URL = validate_proxy_url(settings.PROXY_URL, field_label="PROXY_URL")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if settings.OPENAI_API_KEY is not None:
         updates["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
     if settings.OPENAI_BASE_URL is not None:
@@ -287,24 +311,52 @@ async def update_ai_settings(settings: AISettingsModel):
     return {"message": "AI设置已成功更新"}
 
 
+def resolve_ai_test_credentials(submitted: dict, *, stored_api_key: str, stored_base_url: str,
+                                stored_proxy_url: str) -> tuple[str, str, str]:
+    """决定测试连接用哪把 Key。
+
+    已保存的 Key 只能发往已保存的地址（含代理）：请求体里换了 OPENAI_BASE_URL 或 PROXY_URL
+    却没带新 Key，就拒绝，否则任何能调这个接口的人都能把存好的 Key 发到自己的服务器上。
+    """
+    submitted_api_key = str(submitted.get("OPENAI_API_KEY") or "").strip()
+    base_url = validate_url_scheme(submitted.get("OPENAI_BASE_URL"), field_label="OPENAI_BASE_URL")
+    proxy_url = validate_proxy_url(submitted.get("PROXY_URL"), field_label="PROXY_URL")
+    if submitted_api_key:
+        return submitted_api_key, base_url, proxy_url
+    address_changed = (
+        normalize_url_for_compare(base_url) != normalize_url_for_compare(stored_base_url)
+        or normalize_url_for_compare(proxy_url) != normalize_url_for_compare(stored_proxy_url)
+    )
+    if address_changed:
+        raise ValueError("更换 API 地址或代理后请重新填写 API Key 再测试：已保存的 Key 不会发往新地址")
+    if not stored_api_key:
+        raise ValueError("尚未配置 OPENAI_API_KEY，请先填写")
+    return stored_api_key, base_url, proxy_url
+
+
 @router.post("/ai/test")
 async def test_ai_settings(settings: dict):
     """测试AI模型设置是否有效"""
     try:
+        api_key, base_url, proxy_url = resolve_ai_test_credentials(
+            settings,
+            stored_api_key=env_manager.get_value("OPENAI_API_KEY", "") or "",
+            stored_base_url=env_manager.get_value("OPENAI_BASE_URL", "") or "",
+            stored_proxy_url=env_manager.get_value("PROXY_URL", "") or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
         from openai import OpenAI
         import httpx
 
-        stored_api_key = env_manager.get_value("OPENAI_API_KEY", "")
-        submitted_api_key = settings.get("OPENAI_API_KEY", "")
-        api_key = submitted_api_key or stored_api_key
-
         client_params = {
             "api_key": api_key,
-            "base_url": settings.get("OPENAI_BASE_URL", ""),
+            "base_url": base_url,
             "timeout": httpx.Timeout(30.0),
         }
 
-        proxy_url = settings.get("PROXY_URL", "")
         if proxy_url:
             client_params["http_client"] = httpx.Client(proxy=proxy_url)
 
@@ -346,7 +398,10 @@ async def test_ai_settings(settings: dict):
             "response": extract_ai_response_content(response),
         }
     except Exception as exc:
+        # 只回显异常类型和状态码，不把上游响应正文原样带回前端
+        status_code = getattr(exc, "status_code", None)
+        detail = f"{type(exc).__name__}" + (f" (HTTP {status_code})" if status_code else "")
         return {
             "success": False,
-            "message": f"AI模型连接测试失败: {exc}",
+            "message": f"AI模型连接测试失败: {detail}",
         }

@@ -2,8 +2,9 @@
 新架构的主应用入口
 整合所有路由和服务
 """
+import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -17,6 +18,13 @@ from src.api.routes import (
     login_state,
     websocket,
     accounts,
+)
+from src.api.auth import (
+    clear_session_cookie,
+    is_default_password,
+    require_auth,
+    set_session_cookie,
+    verify_password,
 )
 from src.api.dependencies import (
     set_process_service,
@@ -67,6 +75,14 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时
     print("正在启动应用...")
+    if is_default_password():
+        print(
+            "\n" + "=" * 70 + "\n"
+            "⚠️  Web 登录仍是默认账号密码 admin / admin123。\n"
+            "    所有 /api 接口（任务、登录态 cookie、AI Key）都只靠这组密码保护，\n"
+            "    请在 .env 里设置 WEB_USERNAME / WEB_PASSWORD 后重启，尤其是绑定 0.0.0.0 或 Docker 部署时。\n"
+            + "=" * 70 + "\n"
+        )
     bootstrap_sqlite_storage()
     cleanup_task_logs(keep_days=app_settings.task_log_retention_days)
 
@@ -102,16 +118,18 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# 注册路由
-app.include_router(tasks.router)
-app.include_router(dashboard.router)
-app.include_router(logs.router)
-app.include_router(settings.router)
-app.include_router(prompts.router)
-app.include_router(results.router)
-app.include_router(login_state.router)
+# 注册路由：所有 /api 路由统一要求认证（Basic 或登录后签发的会话 cookie）；
+# /ws 在 websocket 端点里自己校验（WebSocket 依赖里抛 HTTPException 无法正确关闭连接）
+AUTH_DEPENDENCIES = [Depends(require_auth)]
+app.include_router(tasks.router, dependencies=AUTH_DEPENDENCIES)
+app.include_router(dashboard.router, dependencies=AUTH_DEPENDENCIES)
+app.include_router(logs.router, dependencies=AUTH_DEPENDENCIES)
+app.include_router(settings.router, dependencies=AUTH_DEPENDENCIES)
+app.include_router(prompts.router, dependencies=AUTH_DEPENDENCIES)
+app.include_router(results.router, dependencies=AUTH_DEPENDENCIES)
+app.include_router(login_state.router, dependencies=AUTH_DEPENDENCIES)
 app.include_router(websocket.router)
-app.include_router(accounts.router)
+app.include_router(accounts.router, dependencies=AUTH_DEPENDENCIES)
 
 # 挂载静态文件
 # 旧的静态文件目录（用于截图等）
@@ -131,9 +149,9 @@ async def health_check():
     return {"status": "healthy", "message": "服务正常运行"}
 
 
-# 认证状态检查端点
+# 登录 / 登出 / 会话检查
 from fastapi import Request, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 class LoginRequest(BaseModel):
@@ -142,11 +160,27 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/auth/status")
-async def auth_status(payload: LoginRequest):
-    """检查认证状态"""
-    if payload.username == app_settings.web_username and payload.password == app_settings.web_password:
+async def auth_status(payload: LoginRequest, request: Request, response: Response):
+    """校验用户名密码；成功则签发 HttpOnly 会话 cookie。"""
+    if verify_password(payload.username, payload.password):
+        set_session_cookie(response, payload.username, secure=request.url.scheme == "https")
         return {"authenticated": True, "username": payload.username}
+    # 失败时稍作停顿，让暴力尝试变慢
+    await asyncio.sleep(0.5)
     raise HTTPException(status_code=401, detail="认证失败")
+
+
+@app.post("/auth/logout")
+async def auth_logout(response: Response):
+    """清除会话 cookie。"""
+    clear_session_cookie(response)
+    return {"authenticated": False}
+
+
+@app.get("/auth/me")
+async def auth_me(username: str = Depends(require_auth)):
+    """当前会话是否有效；前端启动时用它校验 localStorage 里的登录标记。"""
+    return {"authenticated": True, "username": username}
 
 
 # 主页路由 - 服务 Vue 3 SPA

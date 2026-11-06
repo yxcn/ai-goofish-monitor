@@ -8,6 +8,7 @@ import aiofiles
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List
+from src.core.path_safety import validate_relative_dir
 from src.infrastructure.config.env_manager import env_manager
 
 
@@ -35,7 +36,12 @@ def _strip_quotes(value: str) -> str:
 
 def _state_dir() -> str:
     raw = env_manager.get_value("ACCOUNT_STATE_DIR", "state") or "state"
-    return _strip_quotes(raw.strip())
+    try:
+        return validate_relative_dir(_strip_quotes(raw.strip()), field_label="ACCOUNT_STATE_DIR", default="state")
+    except ValueError as exc:
+        # .env 被手工改成了项目外的目录：拒绝使用，回落到默认目录
+        print(f"[accounts] 忽略不安全的 ACCOUNT_STATE_DIR: {exc}")
+        return "state"
 
 
 def _ensure_state_dir(path: str) -> None:

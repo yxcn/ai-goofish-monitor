@@ -5,6 +5,8 @@ WebSocket 路由
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from typing import Set
 
+from src.api.auth import websocket_user
+
 
 router = APIRouter()
 
@@ -16,8 +18,12 @@ active_connections: Set[WebSocket] = set()
 async def websocket_endpoint(
     websocket: WebSocket,
 ):
-    """WebSocket 端点"""
-    # 接受连接
+    """WebSocket 端点：要求和 HTTP 接口同样的认证（浏览器自动带会话 cookie）。"""
+    if websocket_user(websocket) is None:
+        # 先 accept 再以 1008 关闭，浏览器端才能拿到明确的策略违规码并停止重连
+        await websocket.accept()
+        await websocket.close(code=1008, reason="未登录")
+        return
     await websocket.accept()
     active_connections.add(websocket)
 

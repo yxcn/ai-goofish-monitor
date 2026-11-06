@@ -2,6 +2,7 @@
 通知配置读写与校验服务
 """
 import json
+from typing import Iterable
 from urllib.parse import urlparse
 
 from src.infrastructure.config.env_manager import env_manager
@@ -198,23 +199,71 @@ def prepare_notification_settings_update(
     return updates, deletions, candidate_settings
 
 
+def _reject_stored_secrets_for_changed_urls(
+    patch_payload: dict,
+    current_settings: NotificationSettings,
+    channels: Iterable[str],
+) -> None:
+    """测试通知时，改了渠道地址却没重填该渠道的密钥 → 拒绝。
+
+    否则已保存的 bot token / gotify token / webhook headers 会被原样发往请求体里任意指定的新地址。
+    """
+    for channel in channels:
+        fields = CHANNEL_NOTIFICATION_FIELDS[channel]
+        changed_urls = []
+        for env_name in sorted(fields & URL_FIELDS):
+            if env_name not in patch_payload:
+                continue
+            stored_value = getattr(current_settings, NOTIFICATION_FIELD_MAP[env_name], None)
+            new_value = _normalize_patch_value(env_name, patch_payload[env_name])
+            if _url_for_compare(new_value) != _url_for_compare(stored_value):
+                changed_urls.append(env_name)
+        if not changed_urls:
+            continue
+        # 本身就是 URL 的密钥（BARK_URL / WX_BOT_URL / WEBHOOK_URL）改了就等于用户重填了，不需要再要
+        missing_secrets = sorted(
+            env_name
+            for env_name in (fields & SECRET_NOTIFICATION_FIELDS) - URL_FIELDS
+            if env_name not in patch_payload
+            and getattr(current_settings, NOTIFICATION_FIELD_MAP[env_name], None)
+        )
+        if missing_secrets:
+            raise NotificationSettingsValidationError(
+                f"更换 {'/'.join(changed_urls)} 后请重新填写 {'/'.join(missing_secrets)} 再测试："
+                "已保存的密钥不会发往新地址"
+            )
+
+
+def _url_for_compare(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    if not parsed.scheme or not parsed.netloc:
+        return text.rstrip("/").lower()
+    rebuilt = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{parsed.path.rstrip('/')}"
+    return rebuilt + (f"?{parsed.query}" if parsed.query else "")
+
+
 def prepare_notification_test_settings(
     patch_payload: dict,
     existing_settings: NotificationSettings | None = None,
     *,
     channel: str | None = None,
 ) -> NotificationSettings:
+    current_settings = existing_settings or load_notification_settings()
     if channel is None:
+        _reject_stored_secrets_for_changed_urls(patch_payload, current_settings, CHANNEL_NOTIFICATION_FIELDS)
         _, _, merged_settings = prepare_notification_settings_update(
             patch_payload,
-            existing_settings,
+            current_settings,
         )
         return merged_settings
 
     if channel not in CHANNEL_NOTIFICATION_FIELDS:
         raise NotificationSettingsValidationError(f"不支持的通知渠道: {channel}")
 
-    current_settings = existing_settings or load_notification_settings()
+    _reject_stored_secrets_for_changed_urls(patch_payload, current_settings, [channel])
     included_env_fields = set(CHANNEL_NOTIFICATION_FIELDS[channel])
     included_env_fields.add("PCURL_TO_MOBILE")
     merged_values = _build_channel_test_values(current_settings, included_env_fields)
