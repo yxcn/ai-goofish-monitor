@@ -70,6 +70,19 @@ export interface AiAnalysis {
   error?: string;
 }
 
+// 成交参考价：近 30 天消失的挂牌 + 卖家已售同类（见 price_history_service.build_sold_reference）
+export interface SoldReference {
+  sample_count: number;
+  avg_price: number | null;
+  median_price: number | null;
+  min_price: number | null;
+  max_price: number | null;
+  vanished_count: number;
+  sold_listing_count: number;
+  window_days: number;
+  reliable: boolean;
+}
+
 export interface PriceInsight {
   observation_count: number;
   current_price?: number | null;
@@ -79,6 +92,17 @@ export interface PriceInsight {
   max_price?: number | null;
   market_avg_price?: number | null;
   market_median_price?: number | null;
+  market_sample_count?: number;
+  sold_reference?: SoldReference;
+  vs_listing_median_percent?: number | null;
+  vs_sold_reference_percent?: number | null;
+  price_verdict?: string;
+  price_verdict_key?: 'good_deal' | 'fair' | 'pricey' | 'insufficient';
+  price_verdict_basis?: 'sold' | 'listing' | null;
+  reference_price?: number | null;
+  reference_sample_count?: number;
+  price_diff_percent?: number | null;
+  price_verdict_text?: string;
   price_change_amount?: number | null;
   price_change_percent?: number | null;
   deal_score?: number | null;
@@ -112,6 +136,7 @@ export interface ResultInsights {
     min_price: number | null;
     max_price: number | null;
   }>;
+  sold_reference?: SoldReference;
   latest_snapshot_at?: string | null;
 }
 

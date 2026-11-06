@@ -57,6 +57,8 @@ class NotificationMessage:
     # 卖家画像的结论和信号（见 src/seller_profile.py）
     seller_profile_summary: Optional[str] = None
     seller_signals: tuple[str, ...] = ()
+    # 行情：比成交参考价/挂牌中位价高低多少、结论（见 price_history_service.build_price_verdict）
+    market_line: Optional[str] = None
 
 
 def split_risk_tags(tags: Iterable | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -209,6 +211,23 @@ def seller_profile_lines(profile) -> tuple[Optional[str], tuple[str, ...]]:
     return summary, signals
 
 
+def describe_market(insight) -> Optional[str]:
+    """如 '比成交参考价低 11%（成交参考价 ¥1049，5 条）→ 性价比高 · 挂牌中位 ¥1688（8 条）'。"""
+    if not isinstance(insight, dict):
+        return None
+    text = str(insight.get("price_verdict_text") or "").strip()
+    if not text or insight.get("price_verdict_key") == "insufficient":
+        return None
+    parts = [text]
+    basis = insight.get("price_verdict_basis")
+    sold = insight.get("sold_reference") if isinstance(insight.get("sold_reference"), dict) else {}
+    if basis == "sold" and insight.get("market_median_price"):
+        parts.append(f"挂牌中位 ¥{float(insight['market_median_price']):.0f}（{insight.get('market_sample_count') or 0} 条）")
+    elif basis == "listing" and sold.get("median_price"):
+        parts.append(f"成交参考 ¥{float(sold['median_price']):.0f}（{sold.get('sample_count') or 0} 条，样本不足）")
+    return " · ".join(parts)
+
+
 def describe_seller(facts: dict) -> Optional[str]:
     """如 '21分钟前来过 · 24 小时回复率 100% · 平均 3分钟回复'。"""
     parts = []
@@ -291,6 +310,7 @@ class NotificationClient(ABC):
         popularity = describe_popularity(facts)
         seller_line = describe_seller(facts)
         profile_summary, signals = seller_profile_lines(product_data.get("卖家画像"))
+        market_line = describe_market(product_data.get("price_insight"))
 
         price_line = f"价格: {price}"
         if facts["original_price"]:
@@ -306,6 +326,8 @@ class NotificationClient(ABC):
         if criteria_summary:
             content_lines.append(f"标准: {criteria_summary}")
         content_lines.append(price_line)
+        if market_line:
+            content_lines.append(f"行情: {market_line}")
         if popularity:
             content_lines.append(f"热度: {popularity}")
         if seller_line:
@@ -366,4 +388,5 @@ class NotificationClient(ABC):
             seller_reply_interval=facts["seller_reply_interval"],
             seller_profile_summary=profile_summary,
             seller_signals=signals,
+            market_line=market_line,
         )

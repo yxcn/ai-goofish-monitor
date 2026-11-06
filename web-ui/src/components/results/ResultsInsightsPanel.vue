@@ -15,6 +15,7 @@ const summaryCards = computed(() => {
   if (!props.insights) return []
   const market = props.insights.market_summary
   const history = props.insights.history_summary
+  const sold = props.insights.sold_reference
   return [
     {
       label: t('results.insights.currentAvg'),
@@ -32,6 +33,14 @@ const summaryCards = computed(() => {
       hint: market.max_price
         ? t('results.insights.highestPrice', { price: market.max_price })
         : t('results.insights.noRange'),
+    },
+    {
+      // 成交参考价：近 30 天消失的挂牌 + 卖家已售同类的中位数
+      label: t('results.insights.soldReference'),
+      value: sold?.median_price ? `¥${sold.median_price}` : '—',
+      hint: sold?.sample_count
+        ? t('results.insights.soldSamples', { vanished: sold.vanished_count, sold: sold.sold_listing_count, days: sold.window_days })
+        : t('results.insights.noSoldSamples'),
     },
   ]
 })
@@ -61,7 +70,7 @@ const latestSnapshotText = computed(() => {
           </p>
         </div>
 
-        <div class="grid gap-4 md:grid-cols-3">
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <article
             v-for="card in summaryCards"
             :key="card.label"

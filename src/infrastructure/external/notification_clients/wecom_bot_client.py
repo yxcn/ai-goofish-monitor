@@ -36,6 +36,8 @@ class WeComBotClient(NotificationClient):
         if message.tags:
             price_line += " " + " · ".join(message.tags)
         markdown_lines.append(price_line)
+        if message.market_line:
+            markdown_lines.append(f"- 行情: {message.market_line}")
         facts = message_facts(message)
         popularity = describe_popularity(facts)
         if popularity:

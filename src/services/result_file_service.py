@@ -7,6 +7,7 @@ from src.services.price_history_service import (
     build_item_price_context,
     load_price_snapshots,
     parse_price_value,
+    load_sold_listings,
 )
 from src.services.result_storage_service import load_visible_result_item_ids
 
@@ -22,6 +23,7 @@ def enrich_records_with_price_insight(records: list[dict], filename: str) -> lis
         return records
 
     visible_item_ids = load_visible_result_item_ids(filename)
+    sold_listings = load_sold_listings(normalize_keyword_from_filename(filename))
     visible_snapshots = [
         snapshot
         for snapshot in snapshots
@@ -36,6 +38,7 @@ def enrich_records_with_price_insight(records: list[dict], filename: str) -> lis
             item_id=str(info.get("商品ID") or ""),
             current_price=parse_price_value(info.get("当前售价")),
             market_snapshots=visible_snapshots,
+            sold_listings=sold_listings,
         )
         enriched.append(clone)
     return enriched

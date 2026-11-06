@@ -92,6 +92,8 @@ class TelegramClient(NotificationClient):
         if message.tags:
             price_line += " · " + " · ".join(escape(tag) for tag in message.tags)
         lines.append(price_line)
+        if message.market_line:
+            lines.append(f"📊 行情: {escape(message.market_line)}")
         facts = message_facts(message)
         popularity = describe_popularity(facts)
         if popularity:

@@ -10,7 +10,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import Badge from '@/components/ui/badge/Badge.vue'
-import { ExternalLink, TrendingUp, TrendingDown, Info, User, Clock, CheckCircle2, XCircle, AlertCircle, EyeOff, Eye, ChevronDown } from 'lucide-vue-next'
+import { ExternalLink, TrendingUp, TrendingDown, Info, User, Clock, CheckCircle2, XCircle, AlertCircle, EyeOff, Eye, ChevronDown, Tag } from 'lucide-vue-next'
 import { formatDateTime } from '@/i18n'
 
 interface Props {
@@ -112,6 +112,25 @@ const profileRows = computed(() => {
   return rows.filter((row) => row.value && row.value !== '暂无')
 })
 const isWarningSignal = (signal: string) => signal.startsWith('⚠️')
+
+// 贵贱判断：后端先比成交参考价，样本不足再比挂牌中位价；都不够就不下结论
+const fmtPrice = (value: number | null | undefined) => (value === null || value === undefined ? '—' : `¥${Math.round(value)}`)
+const priceVerdict = computed(() => {
+  const key = priceInsight?.price_verdict_key
+  if (!key || key === 'insufficient') return null
+  const basis = priceInsight?.price_verdict_basis === 'sold' ? t('results.card.basisSold') : t('results.card.basisListing')
+  const pct = priceInsight?.price_diff_percent ?? 0
+  const detail = Math.abs(pct) < 1
+    ? t('results.card.vsReferenceEqual', { basis })
+    : t(pct < 0 ? 'results.card.vsReferenceBelow' : 'results.card.vsReferenceAbove', { basis, pct: Math.abs(Math.round(pct)) })
+  const style = key === 'good_deal'
+    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    : key === 'pricey'
+      ? 'border-rose-200 bg-rose-50 text-rose-700'
+      : 'border-slate-200 bg-slate-50 text-slate-600'
+  return { label: t(`results.card.verdict.${key}`), detail, style }
+})
+const soldReference = computed(() => priceInsight?.sold_reference ?? null)
 </script>
 
 <template>
@@ -256,22 +275,38 @@ const isWarningSignal = (signal: string) => signal.startsWith('⚠️')
         </dl>
       </div>
 
-      <!-- Price Stats Grid -->
-      <div v-if="priceInsight?.observation_count" class="mt-4 grid grid-cols-2 gap-3">
-        <div class="bg-slate-50/50 p-2.5 rounded-xl border border-slate-100/50 group/stat">
-          <div class="flex items-center gap-1.5 text-[10px] font-medium text-slate-400 mb-1">
-            <TrendingUp class="w-3 h-3" /> {{ t('results.card.marketAvg') }}
-          </div>
-          <div class="text-sm font-bold text-slate-700">
-            {{ priceInsight.market_avg_price ? `¥${priceInsight.market_avg_price}` : '—' }}
-          </div>
+      <!-- Price Stats -->
+      <div v-if="priceInsight?.observation_count" class="mt-4 space-y-2">
+        <div v-if="priceVerdict" class="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-xl border px-3 py-1.5 text-[11px]" :class="priceVerdict.style">
+          <span class="font-bold">{{ priceVerdict.label }}</span>
+          <span>{{ priceVerdict.detail }}</span>
         </div>
-        <div class="bg-slate-50/50 p-2.5 rounded-xl border border-slate-100/50">
-          <div class="flex items-center gap-1.5 text-[10px] font-medium text-slate-400 mb-1">
-            <TrendingDown class="w-3 h-3" /> {{ t('results.card.historicalLow') }}
+        <div v-else class="rounded-xl border border-dashed border-slate-200 px-3 py-1.5 text-[11px] text-slate-400">
+          {{ t('results.card.verdict.insufficient') }}
+        </div>
+        <div class="grid grid-cols-3 gap-2">
+          <div class="bg-slate-50/50 p-2 rounded-xl border border-slate-100/50">
+            <div class="flex items-center gap-1 text-[10px] font-medium text-slate-400 mb-1">
+              <TrendingUp class="w-3 h-3" /> {{ t('results.card.listingMedian') }}
+            </div>
+            <div class="text-sm font-bold text-slate-700">{{ fmtPrice(priceInsight.market_median_price) }}</div>
+            <div class="text-[10px] text-slate-400">{{ t('results.card.samples', { count: priceInsight.market_sample_count ?? 0 }) }}</div>
           </div>
-          <div class="text-sm font-bold text-slate-700">
-            {{ priceInsight.min_price ? `¥${priceInsight.min_price}` : '—' }}
+          <div class="bg-slate-50/50 p-2 rounded-xl border border-slate-100/50">
+            <div class="flex items-center gap-1 text-[10px] font-medium text-slate-400 mb-1">
+              <Tag class="w-3 h-3" /> {{ t('results.card.soldReference') }}
+            </div>
+            <div class="text-sm font-bold" :class="soldReference?.reliable ? 'text-slate-700' : 'text-slate-400'">{{ fmtPrice(soldReference?.median_price) }}</div>
+            <div class="text-[10px] text-slate-400">
+              {{ soldReference?.sample_count ? t('results.card.samples', { count: soldReference.sample_count }) : t('results.card.noSamples') }}
+            </div>
+          </div>
+          <div class="bg-slate-50/50 p-2 rounded-xl border border-slate-100/50">
+            <div class="flex items-center gap-1 text-[10px] font-medium text-slate-400 mb-1">
+              <TrendingDown class="w-3 h-3" /> {{ t('results.card.historicalLow') }}
+            </div>
+            <div class="text-sm font-bold text-slate-700">{{ fmtPrice(priceInsight.min_price) }}</div>
+            <div class="text-[10px] text-slate-400">{{ t('results.card.observations', { count: priceInsight.observation_count }) }}</div>
           </div>
         </div>
       </div>

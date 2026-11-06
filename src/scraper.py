@@ -58,6 +58,7 @@ from src.services.item_analysis_dispatcher import (
 from src.services.price_history_service import (
     build_market_reference,
     load_price_snapshots,
+    load_sold_listings,
     record_market_snapshots,
 )
 from src.services.result_storage_service import load_processed_link_keys
@@ -553,6 +554,8 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     history_run_id = datetime.now().strftime("%Y%m%d%H%M%S")
     history_seen_item_ids: set[str] = set()
     historical_snapshots = load_price_snapshots(keyword)
+    # 已采集卖家的"已售"同类商品，和消失的挂牌一起合成成交参考价
+    sold_listings = load_sold_listings(keyword)
     result_filename = build_result_filename(keyword)
     processed_links = load_processed_link_keys(keyword)
     if processed_links:
@@ -1188,6 +1191,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                     item=item_data,
                                     current_market_items=market_items,
                                     historical_snapshots=historical_snapshots,
+                                    sold_listings=sold_listings,
                                 )
                                 final_record["价格参考"] = price_reference
                                 final_record["price_insight"] = price_reference.get(

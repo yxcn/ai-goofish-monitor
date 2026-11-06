@@ -218,6 +218,8 @@ class ItemAnalysisDispatcher:
         notify_data = {**item_data, "ai_analysis": analysis_result}
         if record.get("卖家画像"):
             notify_data["卖家画像"] = record["卖家画像"]
+        if record.get("price_insight"):
+            notify_data["price_insight"] = record["price_insight"]
         try:
             await self._notifier(notify_data, analysis_result.get("reason", "无"))
         except Exception as exc:
