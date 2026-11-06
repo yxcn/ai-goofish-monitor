@@ -309,6 +309,17 @@ class FailureGuard:
             "cookie_mtime": None,
         }
 
+    def snapshot(self) -> dict:
+        """只读地返回每个任务的熔断状态（界面总览用）；文件不可读时返回空 dict。"""
+        try:
+            with self._lock:
+                data = self._load()
+        except Exception as exc:  # pragma: no cover - 只在文件系统异常时触发
+            print(f"[FailureGuard] 警告：读取状态失败: {exc}", file=sys.stderr)
+            return {}
+        tasks = data.get("tasks") if isinstance(data, dict) else None
+        return {str(k): dict(v) for k, v in (tasks or {}).items() if isinstance(v, dict)}
+
     def record_success(self, task_key: str, *, now: Optional[datetime] = None) -> None:
         current = _now(self.tz_name, now=now)
         try:

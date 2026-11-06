@@ -91,7 +91,7 @@ async def _parse_search_result_item(item) -> dict:
     }
 
 
-async def _parse_search_results_json(json_data: dict, source: str) -> list:
+async def _parse_search_results_json(json_data: dict, source: str, stats=None) -> list:
     """解析搜索API的JSON数据，返回基础商品信息列表。
 
     逐商品解析：某个商品字段异常（publishTime 是数字、targetUrl 为 null、价格带"万"却不是数字、
@@ -102,6 +102,9 @@ async def _parse_search_results_json(json_data: dict, source: str) -> list:
     items = await safe_get(json_data, "data", "resultList", default=[])
     if not isinstance(items, list) or not items:
         print(f"LOG: ({source}) API响应中未找到商品列表 (resultList)。")
+        if stats is not None:
+            stats.add("search_pages")
+            stats.add("search_empty_pages")
         if AI_DEBUG_MODE:
             print(f"--- [SEARCH DEBUG] RAW JSON RESPONSE from {source} ---")
             print(json.dumps(json_data, ensure_ascii=False, indent=2, default=str))
@@ -109,12 +112,19 @@ async def _parse_search_results_json(json_data: dict, source: str) -> list:
         return []
 
     page_data = []
+    failed = 0
     for index, item in enumerate(items, 1):
         try:
             page_data.append(await _parse_search_result_item(item))
         except Exception as e:
+            failed += 1
             print(f"LOG: ({source}) 第 {index}/{len(items)} 个商品解析失败，已跳过: {type(e).__name__}: {e}")
     print(f"LOG: ({source}) 成功解析到 {len(page_data)} 条商品基础信息。")
+    if stats is not None:
+        # 运行摘要：解析失败比例高是"接口字段变了"的最早信号
+        stats.add("search_pages")
+        stats.add("search_items_total", len(items))
+        stats.add("search_parse_failed", failed)
     return page_data
 
 

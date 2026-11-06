@@ -64,6 +64,17 @@ from src.services.price_history_service import (
     record_market_snapshots,
 )
 from src.services.result_storage_service import load_processed_link_keys, mark_notification_status
+from src.services.crawl_health_service import (
+    LEVEL_OK,
+    RunStats,
+    classify_error,
+    format_alert_text,
+    mark_run_notified,
+    record_crawl_run,
+    should_notify_health,
+    CATEGORY_TITLES,
+    CATEGORY_ACTIONS,
+)
 from src.services.seller_profile_cache import SellerProfileCache
 from src.attribute_rules import normalize_attribute_rules
 from src.title_filter import (
@@ -194,12 +205,58 @@ def _format_failure_reason(reason: str, limit: int = 500) -> str:
     return cleaned[: limit - 3] + "..."
 
 
+def _record_run_summary(run_stats: "RunStats", last_error: str) -> Optional[dict]:
+    """把本轮计数写进 crawl_runs 并返回评估；写库失败只打日志，不影响任务结果。"""
+    try:
+        assessment = record_crawl_run(
+            run_stats,
+            status="failed" if last_error else "success",
+            error_reason=last_error or None,
+        )
+    except Exception as exc:
+        print(f"[健康] 写入运行摘要失败（忽略）: {exc}")
+        return None
+    print(
+        f"[健康] 本轮评估：{assessment.get('title')}（{assessment.get('level')}）— {assessment.get('message')}"
+    )
+    return assessment
+
+
+async def _notify_health_alert(task_config: dict, assessment: dict) -> None:
+    """任务没报错但健康评估异常时推送一条；同一任务同一分类每天最多一次。"""
+    task_name = task_config.get("task_name", "未命名任务")
+    category = str(assessment.get("category") or "")
+    try:
+        if not should_notify_health(task_name, category):
+            print(f"[健康] 今天已提醒过「{assessment.get('title')}」，本次不再推送。")
+            return
+    except Exception as exc:
+        print(f"[健康] 检查提醒记录失败（忽略）: {exc}")
+        return
+    product_data = {
+        "商品标题": f"[爬虫健康] {task_name}：{assessment.get('title')}",
+        "当前售价": "N/A",
+        "商品链接": "#",
+    }
+    notify_reason = format_alert_text(assessment) + f"\n任务: {task_name}\n关键词: {task_config.get('keyword', '') or 'N/A'}"
+    try:
+        await send_ntfy_notification(product_data, notify_reason)
+        if assessment.get("run_id"):
+            mark_run_notified(int(assessment["run_id"]))
+    except Exception as exc:
+        print(f"[健康] 推送健康提醒失败: {exc}")
+
+
 async def _notify_task_failure(
-    task_config: dict, reason: str, *, cookie_path: Optional[str]
+    task_config: dict, reason: str, *, cookie_path: Optional[str], assessment: Optional[dict] = None
 ) -> None:
     task_name = task_config.get("task_name", "未命名任务")
     keyword = task_config.get("keyword", "")
     formatted_reason = _format_failure_reason(reason)
+    # 推送里先说是哪一类、该做什么，再贴原始错误
+    category = (assessment or {}).get("category") or classify_error(formatted_reason)
+    category_title = CATEGORY_TITLES.get(category, category)
+    category_action = CATEGORY_ACTIONS.get(category, "")
 
     # Some failures are deterministic misconfiguration and should pause/notify immediately.
     pause_immediately = any(
@@ -234,7 +291,8 @@ async def _notify_task_failure(
         "商品链接": "#",
     }
     notify_reason = (
-        f"任务运行失败(已连续 {guard_result.get('consecutive_failures')}/{FAILURE_GUARD.threshold} 次): {formatted_reason}"
+        f"【{category_title}】" + (f"建议：{category_action}\n" if category_action else "")
+        + f"任务运行失败(已连续 {guard_result.get('consecutive_failures')}/{FAILURE_GUARD.threshold} 次): {formatted_reason}"
         f"\n任务: {task_name}"
         f"\n关键词: {keyword or 'N/A'}"
         f"\n已自动暂停重试，暂停到: {paused_until_str}"
@@ -756,6 +814,8 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
         if extra.strip().lower() != str(keyword).strip().lower()
     ]
     search_keywords = [keyword] + extra_keywords
+    # 运行摘要：各处只 add 计数，结束时统一分类并写库，界面和推送据此判断"爬虫是否需要人介入"
+    run_stats = RunStats(task_name=str(task_config.get("task_name", "未命名任务")), keyword=str(keyword))
     try:
         attribute_rules = normalize_attribute_rules(task_config.get("attribute_rules"))
     except ValueError as exc:
@@ -1205,7 +1265,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                         continue
 
                     basic_items = await _parse_search_results_json(
-                        await current_response.json(), f"第 {page_num} 页"
+                        await current_response.json(), f"第 {page_num} 页", stats=run_stats
                     )
                     if not basic_items:
                         break
@@ -1214,6 +1274,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                     if min_price or max_price:
                         in_range_items = filter_items_by_price(basic_items, min_price, max_price)
                         dropped_by_price = len(basic_items) - len(in_range_items)
+                        run_stats.add("price_filtered", dropped_by_price)
                         if dropped_by_price:
                             log_time(
                                 f"第 {page_num} 页 {len(basic_items)} 个商品中有 {dropped_by_price} 个售价不在 "
@@ -1252,6 +1313,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
 
                         unique_key = get_link_unique_key(item_data["商品链接"])
                         if unique_key in processed_links:
+                            run_stats.add("already_processed")
                             log_time(
                                 f"[页内进度 {i}/{total_items_on_page}] 商品 '{item_data['商品标题'][:20]}...' 已存在，跳过。"
                             )
@@ -1265,6 +1327,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                         )
                         if skip_reason:
                             title_filtered_count += 1
+                            run_stats.add("title_filtered")
                             log_time(
                                 f"[页内进度 {i}/{total_items_on_page}] 商品 '{item_data['商品标题'][:20]}...' "
                                 f"{skip_reason}，跳过。"
@@ -1279,6 +1342,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
 
                         detail_page = await context.new_page()
                         try:
+                            run_stats.add("detail_attempts")
                             async with detail_page.expect_response(
                                 lambda r: DETAIL_API_URL_PATTERN in r.url, timeout=25000
                             ) as detail_info:
@@ -1425,6 +1489,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                 )
 
                                 processed_links.add(unique_key)
+                                run_stats.add("items_submitted")
                                 processed_item_count += 1
                                 log_time(
                                     f"商品已提交后台分析。累计处理 {processed_item_count} 个新商品。"
@@ -1452,13 +1517,16 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                     )
 
                         except PlaywrightTimeoutError:
+                            run_stats.add("detail_timeouts")
                             print(f"   错误: 访问商品详情页或等待API响应超时。")
                         except ItemDetailUnavailable as e:
+                            run_stats.add("detail_unavailable")
                             print(f"   跳过: {e}")
                         except (RiskControlError, LoginRequiredError):
                             # 风控 / 登录失效必须终止整个任务，不能被下面的兜底 except 吞掉继续下一个商品
                             raise
                         except Exception as e:
+                            run_stats.add("detail_errors")
                             print(f"   错误: 处理商品详情时发生未知错误: {e}")
                         finally:
                             await detail_page.close()
@@ -1629,10 +1697,12 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
             break
         except LoginRequiredError as e:
             last_error = str(e)
+            run_stats.add("login_expired_events")
             print(f"检测到登录失效/重定向: {e}")
             break
         except RiskControlError as e:
             last_error = str(e)
+            run_stats.add("risk_control_events")
             print(f"检测到风控或验证触发: {e}")
             # 风控验证通常不是简单轮换能解决的，避免无意义重试。
             break
@@ -1642,8 +1712,13 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
             if attempt < attempt_limit:
                 print("将尝试轮换账号/IP 后重试...")
 
+    assessment = _record_run_summary(run_stats, last_error)
+
     if last_error:
-        await _notify_task_failure(task_config, last_error, cookie_path=last_state_path)
+        await _notify_task_failure(task_config, last_error, cookie_path=last_state_path, assessment=assessment)
+    elif assessment and assessment.get("level") != LEVEL_OK:
+        # 任务"成功"但健康评估不正常（解析失败率高、0 结果）：这是接口变更最常见的样子，单独提醒
+        await _notify_health_alert(task_config, assessment)
 
     # 清理任务图片目录
     cleanup_task_images(task_config.get("task_name", "default"))

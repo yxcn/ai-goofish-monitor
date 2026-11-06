@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 
 from src.api.routes import (
     dashboard,
+    health,
     tasks,
     logs,
     settings,
@@ -123,6 +124,7 @@ app = FastAPI(
 AUTH_DEPENDENCIES = [Depends(require_auth)]
 app.include_router(tasks.router, dependencies=AUTH_DEPENDENCIES)
 app.include_router(dashboard.router, dependencies=AUTH_DEPENDENCIES)
+app.include_router(health.router, dependencies=AUTH_DEPENDENCIES)
 app.include_router(logs.router, dependencies=AUTH_DEPENDENCIES)
 app.include_router(settings.router, dependencies=AUTH_DEPENDENCIES)
 app.include_router(prompts.router, dependencies=AUTH_DEPENDENCIES)

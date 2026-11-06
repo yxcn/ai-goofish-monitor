@@ -144,6 +144,23 @@ SCHEMA_STATEMENTS = (
         updated_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS crawl_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_name TEXT NOT NULL,
+        keyword TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT NOT NULL,
+        status TEXT NOT NULL,
+        error_reason TEXT,
+        level TEXT NOT NULL,
+        category TEXT NOT NULL,
+        message TEXT NOT NULL,
+        counters_json TEXT NOT NULL,
+        notified INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_crawl_runs_task_id ON crawl_runs(task_name, id DESC)",
     "CREATE INDEX IF NOT EXISTS idx_tasks_name ON tasks(task_name)",
     """
     CREATE INDEX IF NOT EXISTS idx_results_filename_crawl
