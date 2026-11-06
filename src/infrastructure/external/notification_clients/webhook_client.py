@@ -16,6 +16,8 @@ class WebhookClient(NotificationClient):
 
     channel_key = "webhook"
     display_name = "Webhook"
+    # Webhook 地址本身往往就是密钥（Slack/飞书/钉钉的 incoming webhook），报错里的 URL 整个打码
+    redact_all_urls = True
 
     def __init__(
         self,
@@ -35,6 +37,9 @@ class WebhookClient(NotificationClient):
         self.webhook_query_parameters = webhook_query_parameters
         self.webhook_body = webhook_body
 
+    def _secrets(self) -> tuple[str, ...]:
+        return (self.webhook_url,) if self.webhook_url else ()
+
     async def send(self, product_data: Dict, reason: str) -> None:
         if not self.is_enabled():
             raise RuntimeError("Webhook 未启用")
@@ -45,25 +50,31 @@ class WebhookClient(NotificationClient):
         loop = asyncio.get_running_loop()
 
         if self.webhook_method == "GET":
-            response = await loop.run_in_executor(
-                None,
-                lambda: requests.get(final_url, headers=headers, timeout=15),
-            )
-            response.raise_for_status()
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: requests.get(final_url, headers=headers, timeout=15),
+                )
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                self._raise_sanitized(exc)
             return
 
         json_payload, form_payload = self._build_body(message, headers)
-        response = await loop.run_in_executor(
-            None,
-            lambda: requests.post(
-                final_url,
-                headers=headers,
-                json=json_payload,
-                data=form_payload,
-                timeout=15,
-            ),
-        )
-        response.raise_for_status()
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(
+                    final_url,
+                    headers=headers,
+                    json=json_payload,
+                    data=form_payload,
+                    timeout=15,
+                ),
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            self._raise_sanitized(exc)
 
     def _build_url(self, message: NotificationMessage) -> str:
         params = self._parse_json(

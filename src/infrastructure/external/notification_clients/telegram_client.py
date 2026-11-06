@@ -9,7 +9,15 @@ import requests
 
 from src.infrastructure.config.settings import DEFAULT_TELEGRAM_API_BASE_URL
 
-from .base import NotificationClient, describe_popularity, describe_seller, message_facts
+from .base import (
+    TELEGRAM_TEXT_LIMIT,
+    NotificationClient,
+    describe_popularity,
+    describe_seller,
+    message_facts,
+    render_within_limit,
+    utf16_length,
+)
 
 
 class TelegramClient(NotificationClient):
@@ -32,6 +40,9 @@ class TelegramClient(NotificationClient):
             (api_base_url or DEFAULT_TELEGRAM_API_BASE_URL).rstrip("/")
         )
 
+    def _secrets(self) -> tuple[str, ...]:
+        return (self.bot_token,) if self.bot_token else ()
+
     async def send(self, product_data: Dict, reason: str) -> None:
         """发送 Telegram 通知"""
         if not self.is_enabled():
@@ -40,7 +51,13 @@ class TelegramClient(NotificationClient):
         message = self._build_message(product_data, reason)
         telegram_payload = {
             "chat_id": self.chat_id,
-            "text": self._render_text(message),
+            # Telegram 单条消息上限 4096 字符（按 UTF-16 单元计）：超长先砍 AI 理由，保留标题/价格/链接
+            "text": render_within_limit(
+                message,
+                self._render_text,
+                TELEGRAM_TEXT_LIMIT,
+                measure=utf16_length,
+            ),
             "parse_mode": "HTML",
             "disable_web_page_preview": False
         }
@@ -61,13 +78,14 @@ class TelegramClient(NotificationClient):
             response.raise_for_status()
         except requests.RequestException as exc:
             # requests 的报错会带上完整 URL，里面有 bot token，不能原样进日志和界面
-            raise RuntimeError(self._redact_token(str(exc))) from None
+            self._raise_sanitized(exc)
         result = response.json()
         if not result.get("ok"):
-            raise RuntimeError(result.get("description", "Telegram 返回未知错误"))
+            raise RuntimeError(self._redact(str(result.get("description", "Telegram 返回未知错误"))))
 
     def _redact_token(self, text: str) -> str:
-        return text.replace(self.bot_token, "***") if self.bot_token else text
+        """兼容旧名字，等价于 _redact。"""
+        return self._redact(text)
 
     @staticmethod
     def _render_text(message) -> str:

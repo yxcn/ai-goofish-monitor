@@ -325,7 +325,8 @@ def test_telegram_client_redacts_bot_token_from_network_errors(monkeypatch):
     monkeypatch.setattr("requests.post", _boom)
     client = TelegramClient("123:secret-token", "4567", pcurl_to_mobile=False)
 
-    with pytest.raises(RuntimeError) as excinfo:
+    # 脱敏后按原异常类型重新抛出（requests.ConnectionError），不再包成 RuntimeError
+    with pytest.raises(requests.ConnectionError) as excinfo:
         asyncio.run(client.send(_product(), "价格合适"))
     assert "secret-token" not in str(excinfo.value)
     assert "/bot***/sendMessage" in str(excinfo.value)

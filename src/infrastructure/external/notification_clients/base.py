@@ -2,10 +2,12 @@
 通知客户端基类
 定义通知客户端的统一接口
 """
+import dataclasses
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Iterable, Optional
+from typing import Callable, Dict, Iterable, NoReturn, Optional
+from urllib.parse import quote, urlsplit
 
 from src.utils import convert_goofish_link
 
@@ -15,6 +17,211 @@ VERDICT_REJECT = "不建议购买"
 
 # AI 把"买前要和卖家确认的事"放在 risk_tags 里，以"需确认"开头；其余标签是单纯的风险提示
 _CONFIRM_PREFIX = re.compile(r"^\s*需确认\s*[：:，,、\-—\s]*")
+
+# --- 报错文本脱敏 ---
+# requests 的报错形如 "... for url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<完整key>"
+# 或 "Max retries exceeded with url: /message?token=<token>"，会进任务日志并被设置页的
+# 测试接口原样返回前端。这里统一把 query 里的密钥、URL 里的 user:pass、以及各渠道自己
+# 知道的密钥值换成 ***。
+REDACTED = "***"
+SENSITIVE_QUERY_KEYS = frozenset({
+    "key", "token", "pushkey", "push_key", "access_token", "accesstoken",
+    "api_key", "apikey", "secret", "password", "passwd", "pwd",
+    "auth", "authorization", "sign", "signature", "credential", "code",
+})
+_SENSITIVE_QUERY_RE = re.compile(
+    r"([?&](?:" + "|".join(sorted(SENSITIVE_QUERY_KEYS)) + r")=)([^&\s'\"<>)\]]*)",
+    re.IGNORECASE,
+)
+_URL_USERINFO_RE = re.compile(r"(https?://)([^/\s@]+)@", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://[^\s'\"<>()\[\]{}]+", re.IGNORECASE)
+# 太短的"密钥"（比如空串、"1"）不做全文替换，免得把正常文字也打成 ***
+MIN_SECRET_LENGTH = 4
+
+
+def redact_secrets(
+    text: str,
+    secrets: Iterable[Optional[str]] = (),
+    *,
+    redact_all_urls: bool = False,
+) -> str:
+    """把报错文本里的密钥换成 ***。
+
+    - ``secrets`` 里的每个值（及其 URL 编码形式）整段替换；
+    - URL / 路径 query 里 key、token、pushkey 等敏感键的值替换；
+    - ``https://user:pass@host`` 的 userinfo 替换；
+    - ``redact_all_urls=True`` 时把所有 http(s) URL 整个换成 ***（Webhook 的 URL 本身就是密钥）。
+    """
+    result = str(text)
+    for secret in secrets:
+        if not secret:
+            continue
+        secret_text = str(secret)
+        if len(secret_text) < MIN_SECRET_LENGTH:
+            continue
+        for variant in {secret_text, quote(secret_text, safe=""), quote(secret_text)}:
+            if variant:
+                result = result.replace(variant, REDACTED)
+    if redact_all_urls:
+        result = _URL_RE.sub(REDACTED, result)
+    result = _URL_USERINFO_RE.sub(lambda m: f"{m.group(1)}{REDACTED}@", result)
+    result = _SENSITIVE_QUERY_RE.sub(lambda m: f"{m.group(1)}{REDACTED}", result)
+    return result
+
+
+def url_path_segments(url: Optional[str]) -> tuple[str, ...]:
+    """取 URL 路径上的各段（Bark 的 device key、ntfy 的 topic 都在这里）。"""
+    if not url:
+        return ()
+    try:
+        path = urlsplit(str(url)).path
+    except ValueError:
+        return ()
+    return tuple(segment for segment in path.split("/") if segment)
+
+
+def url_query_values(url: Optional[str]) -> tuple[str, ...]:
+    """取 URL query 里敏感键的值（企业微信的 ?key=、Gotify 的 ?token=）。"""
+    if not url:
+        return ()
+    try:
+        query = urlsplit(str(url)).query
+    except ValueError:
+        return ()
+    values = []
+    for pair in query.split("&"):
+        if "=" not in pair:
+            continue
+        key, value = pair.split("=", 1)
+        if key.lower() in SENSITIVE_QUERY_KEYS and value:
+            values.append(value)
+    return tuple(values)
+
+
+def rebuild_exception(exc: BaseException, message: str) -> BaseException:
+    """用脱敏后的消息重建同类型异常；该类型构造不了（需要额外参数）时退回 RuntimeError。
+
+    不复用原对象：requests 异常上挂着 response/request，里面还有完整 URL。
+    """
+    try:
+        rebuilt = type(exc)(message)
+    except Exception:
+        rebuilt = RuntimeError(message)
+    if not isinstance(rebuilt, BaseException):  # pragma: no cover - 极端的奇怪子类
+        rebuilt = RuntimeError(message)
+    return rebuilt
+
+
+# --- 消息长度裁剪 ---
+# Telegram 文本上限 4096 字符（按 UTF-16 单元数），企业微信 markdown 上限 4096 字节
+TELEGRAM_TEXT_LIMIT = 4096
+WECOM_MARKDOWN_LIMIT_BYTES = 4096
+ELLIPSIS = "…"
+# 砍到不足这么多单位就整段去掉（列表字段则逐项去掉）
+MIN_FIELD_KEEP = 24
+# 超长时的裁剪顺序：先 AI 理由，再性价比说明、信号列表……标题、价格、链接永远保留
+SHRINKABLE_FIELDS: tuple[str, ...] = (
+    "reason",
+    "value_summary",
+    "seller_signals",
+    "risk_notes",
+    "confirm_items",
+    "seller_profile_summary",
+    "seller_identity",
+    "market_line",
+)
+# 渠道渲染时无条件输出的字段：砍到最短也得留个带省略号的残句，不能置空
+_ALWAYS_RENDERED_FIELDS = frozenset({"reason"})
+
+
+def utf8_length(text: str) -> int:
+    return len(str(text).encode("utf-8"))
+
+
+def utf16_length(text: str) -> int:
+    """Telegram 的 4096 按 UTF-16 code unit 计，emoji 算 2。"""
+    return len(str(text).encode("utf-16-le")) // 2
+
+
+def truncate_message(
+    text: str,
+    limit: int,
+    *,
+    measure: Callable[[str], int] = len,
+    ellipsis: str = ELLIPSIS,
+) -> str:
+    """把 text 裁到 measure(text) <= limit，超长处补省略号。纯函数。
+
+    measure 用 len 按字符数、utf8_length 按字节数、utf16_length 按 UTF-16 单元数。
+    """
+    text = str(text)
+    if limit <= 0:
+        return ""
+    if measure(text) <= limit:
+        return text
+    budget = limit - measure(ellipsis)
+    if budget <= 0:
+        return ellipsis if measure(ellipsis) <= limit else ""
+    # measure 对前缀长度单调，二分找最长可用前缀
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if measure(text[:middle]) <= budget:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low].rstrip() + ellipsis
+
+
+def render_within_limit(
+    message: "NotificationMessage",
+    render: Callable[["NotificationMessage"], str],
+    limit: int,
+    *,
+    measure: Callable[[str], int] = len,
+    fields: Iterable[str] = SHRINKABLE_FIELDS,
+) -> str:
+    """渲染消息并保证 measure(结果) <= limit。
+
+    超长时按 fields 顺序先缩短 AI 理由，再去掉性价比说明、信号列表等，每改一次
+    就重新渲染（渲染可能转义，所以不能在渲染结果上直接动刀）；都砍完还超就硬截断。
+    """
+    text = render(message)
+    if measure(text) <= limit:
+        return text
+
+    current = message
+    for field in fields:
+        value = getattr(current, field, None)
+        if not value:
+            continue
+        while measure(text) > limit:
+            excess = measure(text) - limit
+            if isinstance(value, (tuple, list)):
+                value = tuple(value)[:-1]
+                current = dataclasses.replace(current, **{field: value})
+                text = render(current)
+                if not value:
+                    break
+                continue
+
+            value_text = str(value)
+            target = measure(value_text) - excess
+            if target < MIN_FIELD_KEEP:
+                if field in _ALWAYS_RENDERED_FIELDS:
+                    value = truncate_message(value_text, MIN_FIELD_KEEP, measure=measure)
+                else:
+                    value = None
+                current = dataclasses.replace(current, **{field: value})
+                text = render(current)
+                break
+            value = truncate_message(value_text, target, measure=measure)
+            current = dataclasses.replace(current, **{field: value})
+            text = render(current)
+        if measure(text) <= limit:
+            return text
+
+    return truncate_message(text, limit, measure=measure)
 
 
 @dataclass(frozen=True)
@@ -278,6 +485,22 @@ class NotificationClient(ABC):
     def is_enabled(self) -> bool:
         """检查客户端是否启用"""
         return self._enabled
+
+    # 子类返回自己知道的密钥值（bot token、device key、?key= 的值……）；
+    # Webhook 这类"整个 URL 都是密钥"的渠道把 redact_all_urls 设成 True。
+    redact_all_urls = False
+
+    def _secrets(self) -> tuple[str, ...]:
+        return ()
+
+    def _redact(self, text: str) -> str:
+        """把报错文本里的密钥换成 ***，见 redact_secrets。"""
+        return redact_secrets(text, self._secrets(), redact_all_urls=self.redact_all_urls)
+
+    def _raise_sanitized(self, exc: BaseException) -> NoReturn:
+        """用脱敏后的消息重新抛出同类型异常，并切断到原异常的链（原异常里有完整 URL）。"""
+        message = str(exc) or type(exc).__name__
+        raise rebuild_exception(exc, self._redact(message)) from None
 
     @abstractmethod
     async def send(self, product_data: Dict, reason: str) -> bool:

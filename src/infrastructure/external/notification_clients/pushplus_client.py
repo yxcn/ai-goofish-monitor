@@ -25,6 +25,9 @@ class PushPlusClient(NotificationClient):
         self.topic = topic
         self.api_url = "https://www.pushplus.plus/send"
 
+    def _secrets(self) -> tuple[str, ...]:
+        return (self.token,) if self.token else ()
+
     async def send(self, product_data: Dict, reason: str) -> None:
         """发送 PushPlus 通知"""
         if not self.is_enabled():
@@ -44,15 +47,18 @@ class PushPlusClient(NotificationClient):
             payload["topic"] = self.topic
 
         loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: requests.post(
-                self.api_url,
-                json=payload,
-                timeout=10,
-            ),
-        )
-        response.raise_for_status()
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(
+                    self.api_url,
+                    json=payload,
+                    timeout=10,
+                ),
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            self._raise_sanitized(exc)
         try:
             result = response.json()
         except ValueError as exc:
@@ -60,4 +66,4 @@ class PushPlusClient(NotificationClient):
         # token 无效或额度用完时 HTTP 仍是 200，失败写在 code 里。
         if not isinstance(result, dict) or result.get("code") != 200:
             detail = result.get("msg") if isinstance(result, dict) else None
-            raise RuntimeError(detail or "PushPlus 返回未知错误")
+            raise RuntimeError(self._redact(str(detail)) if detail else "PushPlus 返回未知错误")

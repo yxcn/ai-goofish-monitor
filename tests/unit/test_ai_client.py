@@ -370,3 +370,230 @@ def test_call_ai_switches_to_max_completion_tokens_when_model_rejects_max_tokens
     assert "max_tokens" not in request_history[1]
     assert request_history[1]["max_completion_tokens"] == 8192
     assert request_history[1]["temperature"] == 0.1
+
+
+# -- 超时 / 重试分类 / 兼容性缓存 / 截断 / 图片 --
+
+import time
+
+import httpx
+import openai
+
+import src.infrastructure.external.ai_client as ai_client_module
+from src.services.ai_request_compat import AIRuntimeLimits, CompatProfile
+from src.services.ai_response_parser import AIResponseTruncatedError
+
+
+def _settings(**overrides):
+    values = dict(model_name="fake-model", enable_response_format=True, enable_thinking=False)
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _status_error(status: int, message: str):
+    request = httpx.Request("POST", "https://example.test/v1/chat/completions")
+    response = httpx.Response(status, request=request)
+    return openai.APIStatusError(message, response=response, body=None)
+
+
+def _chat_response(content='{"ok":true}', finish_reason="stop"):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content), finish_reason=finish_reason)]
+    )
+
+
+def test_initialize_client_passes_timeout_and_max_retries(monkeypatch):
+    captured = {}
+
+    class _FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(ai_client_module, "AsyncOpenAI", _FakeAsyncOpenAI)
+    client = AIClient.__new__(AIClient)
+    client.settings = SimpleNamespace(
+        api_key="sk-test",
+        base_url="https://example.test/v1",
+        model_name="m",
+        proxy_url=None,
+        is_configured=lambda: True,
+    )
+    client.limits = AIRuntimeLimits(request_timeout_seconds=42, sdk_max_retries=0)
+
+    assert client._initialize_client() is not None
+    assert captured["timeout"] == 42
+    assert captured["max_retries"] == 0
+    assert captured["base_url"] == "https://example.test/v1"
+
+
+def test_call_ai_fails_fast_on_authentication_error():
+    client = AIClient.__new__(AIClient)
+    client.settings = _settings()
+    calls = {"n": 0}
+
+    async def fake_create(**_kwargs):
+        calls["n"] += 1
+        raise _status_error(401, "Error code: 401 - Incorrect API key provided")
+
+    client.client = _build_fake_client(fake_create)
+
+    with pytest.raises(openai.APIStatusError):
+        asyncio.run(client._call_ai([{"role": "user", "content": "hi"}]))
+
+    assert calls["n"] == 1
+
+
+def test_call_ai_backs_off_on_server_errors_then_succeeds():
+    client = AIClient.__new__(AIClient)
+    client.settings = _settings(enable_response_format=False)
+    client.retry_backoff_seconds = (0.01, 0.01, 0.01)
+    calls = {"n": 0}
+
+    async def fake_create(**_kwargs):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise _status_error(503, "Error code: 503 - overloaded")
+        return _chat_response()
+
+    client.client = _build_fake_client(fake_create)
+
+    assert asyncio.run(client._call_ai([{"role": "user", "content": "hi"}])) == '{"ok":true}'
+    assert calls["n"] == 3
+
+
+def test_call_ai_gives_up_after_backoff_attempts_are_exhausted():
+    client = AIClient.__new__(AIClient)
+    client.settings = _settings(enable_response_format=False)
+    client.retry_backoff_seconds = (0, 0, 0)
+    calls = {"n": 0}
+
+    async def fake_create(**_kwargs):
+        calls["n"] += 1
+        raise _status_error(429, "Error code: 429 - rate limited")
+
+    client.client = _build_fake_client(fake_create)
+
+    with pytest.raises(openai.APIStatusError):
+        asyncio.run(client._call_ai([{"role": "user", "content": "hi"}]))
+
+    assert calls["n"] == 4
+
+
+def test_call_ai_reuses_compat_profile_across_calls_and_resets_on_refresh():
+    client = AIClient.__new__(AIClient)
+    client.settings = _settings()
+    request_history = []
+
+    async def fake_create(**kwargs):
+        request_history.append(kwargs)
+        if "response_format" in kwargs:
+            raise Exception(
+                "Error code: 400 - response_format.type `json_object` is not supported by this model."
+            )
+        return _chat_response()
+
+    client.client = _build_fake_client(fake_create)
+
+    asyncio.run(client._call_ai([{"role": "user", "content": "hi"}]))
+    assert len(request_history) == 2
+
+    asyncio.run(client._call_ai([{"role": "user", "content": "hi again"}]))
+    assert len(request_history) == 3
+    assert "response_format" not in request_history[2]
+    assert client.compat_profile.json_output_supported is False
+
+    client.compat_profile = CompatProfile()  # refresh() 做的事
+    asyncio.run(client._call_ai([{"role": "user", "content": "third"}]))
+    assert "response_format" in request_history[3]
+
+
+def test_call_ai_raises_output_limit_once_when_truncated():
+    client = AIClient.__new__(AIClient)
+    client.settings = _settings(enable_response_format=False)
+    request_history = []
+
+    async def fake_create(**kwargs):
+        request_history.append(kwargs)
+        if len(request_history) == 1:
+            return _chat_response('{"ok": tr', "length")
+        return _chat_response()
+
+    client.client = _build_fake_client(fake_create)
+
+    assert asyncio.run(client._call_ai([{"role": "user", "content": "hi"}])) == '{"ok":true}'
+    assert request_history[0]["max_tokens"] == 4000
+    assert request_history[1]["max_tokens"] == 6000
+
+
+def test_call_ai_fails_when_still_truncated_after_raising_limit():
+    client = AIClient.__new__(AIClient)
+    client.settings = _settings(enable_response_format=False)
+    calls = {"n": 0}
+
+    async def fake_create(**_kwargs):
+        calls["n"] += 1
+        return _chat_response('{"ok": tr', "length")
+
+    client.client = _build_fake_client(fake_create)
+
+    with pytest.raises(AIResponseTruncatedError):
+        asyncio.run(client._call_ai([{"role": "user", "content": "hi"}]))
+
+    assert calls["n"] == 2
+
+
+def test_call_ai_passes_per_request_timeout_when_given():
+    client = AIClient.__new__(AIClient)
+    client.settings = _settings(enable_response_format=False)
+    request_history = []
+
+    async def fake_create(**kwargs):
+        request_history.append(kwargs)
+        return _chat_response()
+
+    client.client = _build_fake_client(fake_create)
+
+    asyncio.run(client._call_ai([{"role": "user", "content": "hi"}], timeout=7.5))
+    assert request_history[0]["timeout"] == 7.5
+
+    asyncio.run(client._call_ai([{"role": "user", "content": "hi"}]))
+    assert "timeout" not in request_history[1]
+
+
+def test_analyze_enforces_total_timeout_and_returns_none():
+    client = AIClient.__new__(AIClient)
+    client.settings = _settings(enable_response_format=False)
+    client.limits = AIRuntimeLimits(total_timeout_seconds=0.05)
+
+    async def fake_create(**_kwargs):
+        await asyncio.sleep(5)
+        return _chat_response()
+
+    client.client = _build_fake_client(fake_create)
+    started = time.monotonic()
+
+    result = asyncio.run(client.analyze({"商品信息": {"商品标题": "x"}}, [], "prompt"))
+
+    assert result is None
+    assert time.monotonic() - started < 2
+
+
+def test_build_messages_uses_detected_mime_and_caps_images(tmp_path):
+    client = AIClient.__new__(AIClient)
+    client.limits = AIRuntimeLimits(max_images_per_item=1, max_image_bytes=64)
+    png = tmp_path / "a.jpg"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+    jpeg = tmp_path / "b.jpg"
+    jpeg.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 8)
+
+    messages = client._build_messages({"商品信息": {"商品标题": "x"}}, [str(png), str(jpeg)], "p")
+
+    content = messages[0]["content"]
+    images = [item for item in content if item["type"] == "image_url"]
+    assert len(images) == 1
+    assert images[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+    big = tmp_path / "big.jpg"
+    big.write_bytes(b"\xff\xd8\xff" + b"\x00" * 100)
+    messages = client._build_messages({"商品信息": {"商品标题": "x"}}, [str(big)], "p")
+    assert isinstance(messages[0]["content"], str)  # 唯一一张图太大被跳过，退回纯文本

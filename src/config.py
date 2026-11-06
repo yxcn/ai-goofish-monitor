@@ -5,9 +5,10 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 from src.infrastructure.external.ai_client import _sanitize_no_proxy_env
+from src.services.ai_request_compat import AIRuntimeLimits
 
 # --- AI & Notification Configuration ---
-load_dotenv()
+load_dotenv(interpolate=False)  # 不展开 ${...}：WEBHOOK_BODY 之类的模板占位符要原样保留
 
 # --- File Paths & Directories ---
 STATE_FILE = "xianyu_state.json"
@@ -49,6 +50,19 @@ SKIP_AI_ANALYSIS = os.getenv("SKIP_AI_ANALYSIS", "false").lower() == "true"
 ENABLE_THINKING = os.getenv("ENABLE_THINKING", "false").lower() == "true"
 ENABLE_RESPONSE_FORMAT = os.getenv("ENABLE_RESPONSE_FORMAT", "true").lower() == "true"
 
+# --- AI 超时 / 重试 / 图片限制 ---
+# AI_REQUEST_TIMEOUT_SECONDS      单次请求超时（默认 120s；SDK 默认 600s 太长）
+# AI_SDK_MAX_RETRIES              openai SDK 自带的重试次数（默认 1；外层还有自己的分类重试）
+# AI_ANALYSIS_TOTAL_TIMEOUT_SECONDS 单个商品整次分析的总时限（默认 timeout×3；0 = 不限制）
+# AI_MAX_IMAGES_PER_ITEM          每个商品最多送给模型多少张图（默认 6）
+# AI_MAX_IMAGE_BYTES              单张图片大小上限，超过则跳过（默认 4MB）
+AI_RUNTIME_LIMITS = AIRuntimeLimits.from_env()
+AI_REQUEST_TIMEOUT_SECONDS = AI_RUNTIME_LIMITS.request_timeout_seconds
+AI_SDK_MAX_RETRIES = AI_RUNTIME_LIMITS.sdk_max_retries
+AI_ANALYSIS_TOTAL_TIMEOUT_SECONDS = AI_RUNTIME_LIMITS.total_timeout_seconds
+AI_MAX_IMAGES_PER_ITEM = AI_RUNTIME_LIMITS.max_images_per_item
+AI_MAX_IMAGE_BYTES = AI_RUNTIME_LIMITS.max_image_bytes
+
 # --- Headers ---
 IMAGE_DOWNLOAD_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0',
@@ -74,7 +88,12 @@ else:
             os.environ['HTTPS_PROXY'] = PROXY_URL
 
         # openai 客户端内部的 httpx 会自动从环境变量中获取代理配置
-        client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL)
+        client = AsyncOpenAI(
+            api_key=API_KEY,
+            base_url=BASE_URL,
+            timeout=AI_REQUEST_TIMEOUT_SECONDS,
+            max_retries=AI_SDK_MAX_RETRIES,
+        )
     except Exception as e:
         print(f"初始化 OpenAI 客户端时出错: {e}")
         client = None

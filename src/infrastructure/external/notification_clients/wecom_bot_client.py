@@ -6,7 +6,16 @@ from typing import Dict
 
 import requests
 
-from .base import NotificationClient, describe_popularity, describe_seller, message_facts
+from .base import (
+    WECOM_MARKDOWN_LIMIT_BYTES,
+    NotificationClient,
+    describe_popularity,
+    describe_seller,
+    message_facts,
+    render_within_limit,
+    url_query_values,
+    utf8_length,
+)
 
 
 class WeComBotClient(NotificationClient):
@@ -19,11 +28,49 @@ class WeComBotClient(NotificationClient):
         super().__init__(enabled=bool(bot_url), pcurl_to_mobile=pcurl_to_mobile)
         self.bot_url = bot_url
 
+    def _secrets(self) -> tuple[str, ...]:
+        # 机器人地址的 ?key= 就是密钥
+        return url_query_values(self.bot_url)
+
     async def send(self, product_data: Dict, reason: str) -> None:
         if not self.is_enabled():
             raise RuntimeError("企业微信 未启用")
 
         message = self._build_message(product_data, reason)
+        payload = {
+            "msgtype": "markdown",
+            # 企业微信 markdown 正文上限 4096 字节：超长先砍 AI 理由，保留标题/价格/链接
+            "markdown": {
+                "content": render_within_limit(
+                    message,
+                    self._render_markdown,
+                    WECOM_MARKDOWN_LIMIT_BYTES,
+                    measure=utf8_length,
+                )
+            },
+        }
+        headers = {"Content-Type": "application/json"}
+        loop = asyncio.get_running_loop()
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(
+                    self.bot_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=10,
+                ),
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            # 报错文本里带完整 webhook URL（含 key），脱敏后再抛
+            self._raise_sanitized(exc)
+        result = response.json()
+        if result.get("errcode", 0) != 0:
+            raise RuntimeError(self._redact(str(result.get("errmsg", "企业微信返回未知错误"))))
+
+    @staticmethod
+    def _render_markdown(message) -> str:
         markdown_lines = [f"## {message.notification_title}", ""]
         if message.verdict:
             score = f"（AI 匹配度 {message.match_score}%）" if message.match_score is not None else ""
@@ -64,22 +111,4 @@ class WeComBotClient(NotificationClient):
         if message.mobile_link:
             markdown_lines.append(f"- 手机端链接: [{message.mobile_link}]({message.mobile_link})")
         markdown_lines.append(f"- 电脑端链接: [{message.desktop_link}]({message.desktop_link})")
-        payload = {
-            "msgtype": "markdown",
-            "markdown": {"content": "\n".join(markdown_lines)},
-        }
-        headers = {"Content-Type": "application/json"}
-        loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: requests.post(
-                self.bot_url,
-                json=payload,
-                headers=headers,
-                timeout=10,
-            ),
-        )
-        response.raise_for_status()
-        result = response.json()
-        if result.get("errcode", 0) != 0:
-            raise RuntimeError(result.get("errmsg", "企业微信返回未知错误"))
+        return "\n".join(markdown_lines)

@@ -37,6 +37,7 @@ META_PROMPT_TEMPLATE = """
 ProgressCallback = Callable[[str, str], Awaitable[None]]
 # 参考标准大约一千多 token。思考模型还会先输出推理，800 会把正文截掉。
 CRITERIA_MAX_OUTPUT_TOKENS = 8192
+CRITERIA_REQUEST_TIMEOUT_SECONDS = 300.0
 _THINK_BLOCK_RE = re.compile(
     r"<(?:think|thinking)>.*?</(?:think|thinking)>",
     re.IGNORECASE | re.DOTALL,
@@ -83,6 +84,8 @@ async def _request_generated_text(ai_client: AIClient, prompt: str) -> str:
             temperature=0.5,
             max_output_tokens=CRITERIA_MAX_OUTPUT_TOKENS,
             enable_json_output=False,
+            # 生成整份分析标准比单商品分析慢得多，不用 AI_REQUEST_TIMEOUT_SECONDS（默认 120s）那么紧的超时
+            timeout=CRITERIA_REQUEST_TIMEOUT_SECONDS,
         )
     except Exception as exc:
         print(f"调用 OpenAI API 时出错: {exc}")

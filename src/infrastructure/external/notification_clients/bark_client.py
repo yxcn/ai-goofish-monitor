@@ -4,7 +4,7 @@ Bark 通知客户端
 import asyncio
 import requests
 from typing import Dict
-from .base import NotificationClient
+from .base import NotificationClient, url_path_segments
 
 
 class BarkClient(NotificationClient):
@@ -16,6 +16,10 @@ class BarkClient(NotificationClient):
     def __init__(self, bark_url: str = None, pcurl_to_mobile: bool = True):
         super().__init__(enabled=bool(bark_url), pcurl_to_mobile=pcurl_to_mobile)
         self.bark_url = bark_url
+
+    def _secrets(self) -> tuple[str, ...]:
+        # Bark 的 device key 在路径里：https://api.day.app/<device_key>/
+        return tuple(segment for segment in url_path_segments(self.bark_url) if len(segment) >= 8)
 
     async def send(self, product_data: Dict, reason: str) -> None:
         """发送 Bark 通知"""
@@ -36,13 +40,17 @@ class BarkClient(NotificationClient):
 
         headers = {"Content-Type": "application/json; charset=utf-8"}
         loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: requests.post(
-                self.bark_url,
-                json=bark_payload,
-                headers=headers,
-                timeout=10
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(
+                    self.bark_url,
+                    json=bark_payload,
+                    headers=headers,
+                    timeout=10
+                )
             )
-        )
-        response.raise_for_status()
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            # 报错文本里带完整 Bark URL（含 device key），脱敏后再抛
+            self._raise_sanitized(exc)
