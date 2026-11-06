@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useLogs } from '@/composables/useLogs'
 import { useTasks } from '@/composables/useTasks'
@@ -12,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { toast } from '@/components/ui/toast'
 
 const { t } = useI18n()
+const route = useRoute()
 const { tasks } = useTasks()
 const { logs, isAutoRefresh, clearLogs, toggleAutoRefresh, fetchLogs, setTaskId, loadLatest, loadPrevious, isFetchingHistory, hasMoreHistory } = useLogs()
 const logContainer = ref<HTMLElement | null>(null)
@@ -39,24 +41,40 @@ watch(logs, async () => {
   }
 })
 
-watch(tasks, (list) => {
-  if (!list.length) {
-    selectedTaskId.value = ''
-    setTaskId(null)
-    return
-  }
-  if (selectedTaskId.value && list.some((task) => String(task.id) === selectedTaskId.value)) {
-    return
-  }
-  const running = list.find((task) => task.is_running)
-  const fallback = list[0]
-  if (!fallback) {
-    selectedTaskId.value = ''
-    setTaskId(null)
-    return
-  }
-  selectedTaskId.value = String(running ? running.id : fallback.id)
-}, { immediate: true })
+// `?task=<id>` (e.g. the dashboard health banner's "view logs" link) selects that task
+// once per distinct value. Later task-list refreshes (WebSocket) must not snap a
+// selection the user changed by hand back to the URL's task.
+let handledTaskQuery: string | null = null
+watch(
+  () => [tasks.value, route.query.task] as const,
+  ([list, taskQuery]) => {
+    if (!list.length) {
+      selectedTaskId.value = ''
+      setTaskId(null)
+      return
+    }
+    const requested = typeof taskQuery === 'string' ? taskQuery : null
+    if (requested === null) {
+      handledTaskQuery = null
+    } else if (requested !== handledTaskQuery && list.some((task) => String(task.id) === requested)) {
+      handledTaskQuery = requested
+      selectedTaskId.value = requested
+      return
+    }
+    if (selectedTaskId.value && list.some((task) => String(task.id) === selectedTaskId.value)) {
+      return
+    }
+    const running = list.find((task) => task.is_running)
+    const fallback = list[0]
+    if (!fallback) {
+      selectedTaskId.value = ''
+      setTaskId(null)
+      return
+    }
+    selectedTaskId.value = String(running ? running.id : fallback.id)
+  },
+  { immediate: true }
+)
 
 watch(selectedTaskId, (taskId) => {
   const resolvedTaskId = taskId ? Number(taskId) : null

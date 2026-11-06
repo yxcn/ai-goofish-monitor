@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { Task } from '@/types/task.d.ts'
+import type { CrawlerHealthLevel, CrawlerTaskHealth } from '@/types/health.d.ts'
+import { useCrawlerHealth } from '@/composables/useCrawlerHealth'
 import {
   Table,
   TableBody,
@@ -36,7 +38,7 @@ interface Props {
 }
 
 const props = defineProps<Props>()
-const { t } = useI18n()
+const { t, te } = useI18n()
 const isStopping = (id: number) => props.stoppingIds?.has(id) ?? false
 const isKeywordMode = (task: Task) => task.decision_mode === 'keyword'
 const nowMs = ref(Date.now())
@@ -82,6 +84,51 @@ const resolveCountdownTone = (task: Task) => {
 const resolveNextRunLabel = (task: Task) => {
   if (!task.cron || !task.enabled || !task.next_run_at) return null
   return formatNextRunAbsolute(task.next_run_at)
+}
+
+// Crawler health, keyed by task name. Fetched by TasksView on mount.
+const { health, healthByTaskName } = useCrawlerHealth()
+// No snapshot at all (endpoint not deployed / not loaded yet): show nothing rather
+// than marking every task "no record".
+const hasHealthData = computed(() => health.value !== null)
+const resolveHealth = (task: Task): CrawlerTaskHealth | undefined => healthByTaskName.value.get(task.task_name)
+const resolveHealthLevel = (task: Task): CrawlerHealthLevel => resolveHealth(task)?.level ?? 'unknown'
+
+const HEALTH_DOT_CLASS: Record<CrawlerHealthLevel, string> = {
+  ok: 'bg-emerald-500',
+  warning: 'bg-amber-500',
+  critical: 'bg-rose-500',
+  unknown: 'bg-slate-300',
+}
+const HEALTH_TEXT_CLASS: Record<CrawlerHealthLevel, string> = {
+  ok: 'text-emerald-600',
+  warning: 'text-amber-600',
+  critical: 'text-rose-600',
+  unknown: 'text-slate-400',
+}
+const HEALTH_BADGE_CLASS: Record<CrawlerHealthLevel, string> = {
+  ok: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  warning: 'border-amber-200 bg-amber-50 text-amber-700',
+  critical: 'border-rose-200 bg-rose-50 text-rose-700',
+  unknown: 'border-slate-200 bg-slate-50 text-slate-500',
+}
+
+// ok / unknown show the level word; warning / critical show what is wrong (the category).
+const resolveHealthLabel = (task: Task) => {
+  const entry = resolveHealth(task)
+  const level = entry?.level ?? 'unknown'
+  if (entry && (level === 'warning' || level === 'critical')) {
+    const key = `health.category.${entry.category}`
+    if (te(key)) return t(key)
+  }
+  return t(`health.level.${level}`)
+}
+
+// Hover text: the backend's detail message (prefixed by the label, which may be truncated in the cell).
+const resolveHealthTitle = (task: Task) => {
+  const label = resolveHealthLabel(task)
+  const message = resolveHealth(task)?.message
+  return message ? `${label} · ${message}` : label
 }
 
 const emit = defineEmits<{
@@ -155,6 +202,15 @@ const emit = defineEmits<{
                 :class="task.is_running ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-500'"
               >
                 {{ task.is_running ? t('common.running') : t('common.idle') }}
+              </Badge>
+              <Badge
+                v-if="hasHealthData"
+                variant="outline"
+                :class="['gap-1.5', HEALTH_BADGE_CLASS[resolveHealthLevel(task)]]"
+                :title="resolveHealthTitle(task)"
+              >
+                <span :class="['h-1.5 w-1.5 rounded-full', HEALTH_DOT_CLASS[resolveHealthLevel(task)]]"></span>
+                {{ resolveHealthLabel(task) }}
               </Badge>
             </div>
           </div>
@@ -367,6 +423,16 @@ const emit = defineEmits<{
                   <div :class="[ 'w-1.5 h-1.5 rounded-full shadow-sm', task.is_running ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300' ]"></div>
                   <span :class="[ 'text-[9px] font-black tracking-widest uppercase', task.is_running ? 'text-emerald-600' : 'text-slate-400' ]">
                     {{ task.is_running ? t('common.running') : t('common.idle') }}
+                  </span>
+                </div>
+                <div
+                  v-if="hasHealthData"
+                  class="flex max-w-[96px] items-center gap-1.5"
+                  :title="resolveHealthTitle(task)"
+                >
+                  <div :class="['h-1.5 w-1.5 shrink-0 rounded-full', HEALTH_DOT_CLASS[resolveHealthLevel(task)]]"></div>
+                  <span :class="['truncate text-[9px] font-black tracking-wide', HEALTH_TEXT_CLASS[resolveHealthLevel(task)]]">
+                    {{ resolveHealthLabel(task) }}
                   </span>
                 </div>
               </div>

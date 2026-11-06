@@ -3,6 +3,7 @@ import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useTasks } from '@/composables/useTasks'
+import { useCrawlerHealth } from '@/composables/useCrawlerHealth'
 import type { Task, TaskUpdate } from '@/types/task.d.ts'
 import { parseTaskFormDefaults, withoutTaskDialogQuery } from '@/lib/taskFormQuery'
 import TaskCreateDialog from '@/components/tasks/TaskCreateDialog.vue'
@@ -35,6 +36,7 @@ const {
 } = useTasks()
 const route = useRoute()
 const router = useRouter()
+const { fetchHealth } = useCrawlerHealth()
 
 // State for dialogs
 const isEditDialogOpen = ref(false)
@@ -224,7 +226,10 @@ async function fetchAccountOptions() {
   }
 }
 
-onMounted(fetchAccountOptions)
+onMounted(() => {
+  fetchAccountOptions()
+  fetchHealth()
+})
 </script>
 
 <template>

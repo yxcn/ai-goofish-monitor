@@ -4,6 +4,17 @@ interface FetchOptions extends RequestInit {
   params?: Record<string, string | number | boolean | undefined>;
 }
 
+/** Non-2xx response. `status` lets a caller tell a 404 (feature not deployed) from a real failure. */
+export class HttpError extends Error {
+  status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'HttpError'
+    this.status = status
+  }
+}
+
 /**
  * Turn a FastAPI error `detail` into a readable message.
  * - string: as is
@@ -77,7 +88,7 @@ export async function http(url: string, options: FetchOptions = {}) {
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(formatErrorDetail(errorData?.detail, response.status))
+    throw new HttpError(formatErrorDetail(errorData?.detail, response.status), response.status)
   }
 
   // Handle 204 No Content

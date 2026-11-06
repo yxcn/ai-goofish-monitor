@@ -303,6 +303,43 @@ const enUSExtra = {
       variablesHelp: 'Available template variables:',
     },
   },
+  health: {
+    title: 'Crawler health',
+    bannerTitle: 'Crawler needs attention',
+    viewLogs: 'View logs',
+    noRecord: 'No record',
+    tasksNeedAttention: '{count} task needs attention | {count} tasks need attention',
+    generatedAt: 'Updated {time}',
+    lastRun: 'Last run {time}',
+    consecutiveFailures: '{count} consecutive failures',
+    pausedUntil: 'Paused until {time}',
+    level: {
+      ok: 'Healthy',
+      warning: 'Warning',
+      critical: 'Critical',
+      unknown: 'No record',
+    },
+    category: {
+      ok: 'Healthy',
+      login_expired: 'Login expired',
+      risk_control: 'Risk control triggered',
+      api_drift: 'API parsing drift',
+      zero_results: 'No search results',
+      config_error: 'Configuration error',
+      crash: 'Crashed',
+      paused: 'Circuit breaker paused',
+      no_runs: 'Not run yet',
+    },
+    action: {
+      login_expired: 'Update the login state under "Accounts"',
+      risk_control: 'Pause for a while; if needed set RUN_HEADLESS=false and pass the captcha manually',
+      api_drift: 'Goofish may have changed its API; review and update the scraper parsing logic',
+      zero_results: 'Confirm the keyword still returns results on the Goofish site; otherwise the API or filter logic may have changed',
+      config_error: 'Check the task configuration (login state file / proxy)',
+      crash: 'Check the exception in this task\'s log',
+      paused: 'Circuit breaker active; it resumes automatically when it expires, or right away once the login state file is updated',
+    },
+  },
 }
 
 export default enUSExtra

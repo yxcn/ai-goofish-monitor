@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import Badge from '@/components/ui/badge/Badge.vue'
 import PriceTrendChart from '@/components/results/PriceTrendChart.vue'
+import CrawlerHealthBanner from '@/components/dashboard/CrawlerHealthBanner.vue'
 import { formatNumber, formatRelativeTimeFromNow } from '@/i18n'
 import {
   Activity,
@@ -150,6 +151,7 @@ function openActivity(activity: { filename: string | null; type: string }) {
         </Button>
       </div>
     </div>
+    <CrawlerHealthBanner />
     <div v-if="error" class="app-alert-error" role="alert">
       {{ error.message }}
     </div>

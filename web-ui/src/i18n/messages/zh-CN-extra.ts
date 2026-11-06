@@ -303,6 +303,43 @@ const zhCNExtra = {
       variablesHelp: '可用模板变量：',
     },
   },
+  health: {
+    title: '爬虫健康',
+    bannerTitle: '爬虫需要处理',
+    viewLogs: '查看日志',
+    noRecord: '无记录',
+    tasksNeedAttention: '{count} 个任务需要处理',
+    generatedAt: '更新于 {time}',
+    lastRun: '最近运行 {time}',
+    consecutiveFailures: '连续失败 {count} 次',
+    pausedUntil: '暂停至 {time}',
+    level: {
+      ok: '正常',
+      warning: '警告',
+      critical: '严重',
+      unknown: '无记录',
+    },
+    category: {
+      ok: '正常',
+      login_expired: '登录态失效',
+      risk_control: '触发风控',
+      api_drift: '接口解析异常',
+      zero_results: '搜索无结果',
+      config_error: '配置错误',
+      crash: '运行异常',
+      paused: '熔断暂停',
+      no_runs: '尚未运行',
+    },
+    action: {
+      login_expired: '去「账号管理」更新登录态',
+      risk_control: '暂停一段时间，必要时设 RUN_HEADLESS=false 手动过验证',
+      api_drift: '闲鱼接口可能改版，需要检查并更新爬虫解析逻辑',
+      zero_results: '确认关键词在闲鱼网页上仍有结果，否则可能是接口或筛选逻辑变了',
+      config_error: '检查任务配置（登录态文件 / 代理）',
+      crash: '查看该任务日志里的异常',
+      paused: '熔断中，到期自动恢复；更新登录态文件可立即恢复',
+    },
+  },
 }
 
 export default zhCNExtra
