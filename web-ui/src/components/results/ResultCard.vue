@@ -43,6 +43,32 @@ const crawlTime = props.item.爬取时间
   ? formatDateTime(props.item.爬取时间, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
   : t('common.unknown')
 const matchScore = ai?.value_score ?? 0
+// 商品页上的那几项：标签（包邮/验货宝）、想要、浏览、发货地、发布时间；占位符（NaN、-）不显示
+const listingTags = computed(() => Array.from(new Set((info.商品标签 ?? []).map((tag) => String(tag ?? '').trim()).filter(Boolean))))
+const toCount = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '') return null
+  const parsed = Number(String(value).trim())
+  return Number.isFinite(parsed) ? Math.round(parsed) : null
+}
+const wantsCount = computed(() => toCount(info['“想要”人数']))
+const viewCount = computed(() => toCount(info.浏览量))
+const publishTime = computed(() => {
+  const raw = String(info.发布时间 ?? '').trim()
+  if (!raw || raw === '未知时间') return ''
+  return raw.replace(/^\d{4}-/, '')
+})
+const region = computed(() => {
+  const raw = String(info.发货地区 ?? '').trim()
+  return raw && raw !== '地区未知' ? raw : ''
+})
+// 划线原价：占位符（暂无）或和现价相同时不显示
+const originalPrice = computed(() => {
+  const raw = String(info.商品原价 ?? '').trim()
+  if (!raw || ['暂无', '-', 'N/A'].includes(raw)) return ''
+  const digits = (text: string) => text.replace(/[^\d.]/g, '')
+  return digits(raw) && digits(raw) === digits(String(info.当前售价 ?? '')) ? '' : raw
+})
+const hasListingFacts = computed(() => listingTags.value.length > 0 || wantsCount.value !== null || viewCount.value !== null || !!publishTime.value || !!region.value)
 const isHidden = computed(() => props.item._effective_hidden === true || props.item._status === 'hidden')
 const isRuleHidden = computed(() => props.item._hidden_reason === 'rule')
 const canToggleBlock = computed(() => props.item._hidden_reason !== 'rule' && props.item._hidden_reason !== 'expired')
@@ -113,7 +139,14 @@ const expanded = ref(false)
       </div>
       <div class="flex items-baseline gap-1 mt-2">
         <span class="text-2xl font-bold text-rose-600 tracking-tight">{{ info.当前售价 }}</span>
-        <span v-if="info['商品原价']" class="text-xs text-slate-400 line-through mb-1">{{ info['商品原价'] }}</span>
+        <span v-if="originalPrice" class="text-xs text-slate-400 line-through mb-1">{{ originalPrice }}</span>
+      </div>
+      <div v-if="hasListingFacts" class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
+        <Badge v-for="tag in listingTags" :key="tag" variant="secondary" class="px-1.5 py-0 text-[10px] font-medium bg-rose-50 text-rose-600 border border-rose-100">{{ tag }}</Badge>
+        <span v-if="wantsCount !== null">{{ t('results.card.wants', { count: wantsCount }) }}</span>
+        <span v-if="viewCount !== null">{{ t('results.card.views', { count: viewCount }) }}</span>
+        <span v-if="region">{{ region }}</span>
+        <span v-if="publishTime">{{ t('results.card.published', { time: publishTime }) }}</span>
       </div>
     </CardHeader>
 
