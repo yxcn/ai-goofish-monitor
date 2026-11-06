@@ -101,6 +101,8 @@ class TelegramClient(NotificationClient):
         seller = describe_seller(facts)
         if seller:
             lines.append(f"👤 卖家: {escape(seller)}")
+        if message.seller_identity:
+            lines.append(f"🪪 身份: {escape(message.seller_identity)}")
         if message.seller_profile_summary:
             lines.append(f"🧾 画像: {escape(message.seller_profile_summary)}")
         if message.seller_signals:

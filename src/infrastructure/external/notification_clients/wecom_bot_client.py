@@ -45,6 +45,8 @@ class WeComBotClient(NotificationClient):
         seller = describe_seller(facts)
         if seller:
             markdown_lines.append(f"- 卖家: {seller}")
+        if message.seller_identity:
+            markdown_lines.append(f"- 身份: {message.seller_identity}")
         if message.seller_profile_summary:
             markdown_lines.append(f"- 画像: {message.seller_profile_summary}")
         if message.seller_signals:

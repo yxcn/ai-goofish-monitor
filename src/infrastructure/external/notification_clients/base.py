@@ -57,6 +57,8 @@ class NotificationMessage:
     # 卖家画像的结论和信号（见 src/seller_profile.py）
     seller_profile_summary: Optional[str] = None
     seller_signals: tuple[str, ...] = ()
+    # 画像的身份行：注册时长、个人档案（性别 / 年龄段，没有写暂无）、认证、芝麻信用、经营资质
+    seller_identity: Optional[str] = None
     # 行情：比成交参考价/挂牌中位价高低多少、结论（见 price_history_service.build_price_verdict）
     market_line: Optional[str] = None
 
@@ -202,13 +204,15 @@ def describe_location(region: Optional[str], city: Optional[str]) -> Optional[st
     return city or region or None
 
 
-def seller_profile_lines(profile) -> tuple[Optional[str], tuple[str, ...]]:
-    """从 卖家画像 里取推送要用的两样：一句结论和信号列表。"""
+def seller_profile_lines(profile) -> tuple[Optional[str], tuple[str, ...], Optional[str]]:
+    """从 卖家画像 里取推送要用的三样：一句结论、信号列表、身份行（个人档案 / 认证 / 经营资质）。"""
     if not isinstance(profile, dict):
-        return None, ()
+        return None, (), None
     summary = str(profile.get("结论") or "").strip() or None
     signals = tuple(s for s in (str(x or "").strip() for x in (profile.get("信号") or [])) if s)
-    return summary, signals
+    identity = str(profile.get("身份") or "").strip()
+    identity = identity if identity and identity != "暂无" else None
+    return summary, signals, identity
 
 
 def describe_market(insight) -> Optional[str]:
@@ -309,7 +313,7 @@ class NotificationClient(ABC):
         facts = listing_facts(product_data)
         popularity = describe_popularity(facts)
         seller_line = describe_seller(facts)
-        profile_summary, signals = seller_profile_lines(product_data.get("卖家画像"))
+        profile_summary, signals, identity = seller_profile_lines(product_data.get("卖家画像"))
         market_line = describe_market(product_data.get("price_insight"))
 
         price_line = f"价格: {price}"
@@ -332,6 +336,8 @@ class NotificationClient(ABC):
             content_lines.append(f"热度: {popularity}")
         if seller_line:
             content_lines.append(f"卖家: {seller_line}")
+        if identity:
+            content_lines.append(f"身份: {identity}")
         if profile_summary:
             content_lines.append(f"画像: {profile_summary}")
         if signals:
@@ -388,5 +394,6 @@ class NotificationClient(ABC):
             seller_reply_interval=facts["seller_reply_interval"],
             seller_profile_summary=profile_summary,
             seller_signals=signals,
+            seller_identity=identity,
             market_line=market_line,
         )

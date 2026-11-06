@@ -346,6 +346,7 @@ def _listing_with_profile():
     return {
         **_listing_with_facts(),
         "卖家画像": {
+            "身份": "来闲鱼2年7个月 · 个人档案：暂无 · 实名认证、实人认证 · 芝麻信用未公开",
             "结论": "可见记录无商家迹象，按个人卖家对待；无卖家口碑，建议验货宝或担保交易",
             "信号": ["⚠️ 卖家零评价", "✅ 认证齐全", "", None],
         },
@@ -356,15 +357,17 @@ def test_build_message_includes_seller_profile_lines():
     message = _OkClient(enabled=True, pcurl_to_mobile=False)._build_message(_listing_with_profile(), "价格合适")
     assert message.seller_profile_summary == "可见记录无商家迹象，按个人卖家对待；无卖家口碑，建议验货宝或担保交易"
     assert message.seller_signals == ("⚠️ 卖家零评价", "✅ 认证齐全")
+    assert message.seller_identity == "来闲鱼2年7个月 · 个人档案：暂无 · 实名认证、实人认证 · 芝麻信用未公开"
     assert (
         "卖家: 21分钟前来过 · 24 小时回复率 100% · 平均 3分钟回复\n"
+        "身份: 来闲鱼2年7个月 · 个人档案：暂无 · 实名认证、实人认证 · 芝麻信用未公开\n"
         "画像: 可见记录无商家迹象，按个人卖家对待；无卖家口碑，建议验货宝或担保交易\n"
         "信号: ⚠️ 卖家零评价 · ✅ 认证齐全\n"
         "原因: 价格合适\n"
     ) in message.content
     # 画像不是 dict 时不加行
     message = _OkClient(enabled=True, pcurl_to_mobile=False)._build_message({**_listing_with_facts(), "卖家画像": "x"}, "价格合适")
-    assert message.seller_profile_summary is None and "画像:" not in message.content
+    assert message.seller_profile_summary is None and "画像:" not in message.content and "身份:" not in message.content
 
 
 def test_telegram_client_renders_seller_profile_lines(monkeypatch):
@@ -384,6 +387,7 @@ def test_telegram_client_renders_seller_profile_lines(monkeypatch):
 
     assert (
         "👤 卖家: 21分钟前来过 · 24 小时回复率 100% · 平均 3分钟回复\n"
+        "🪪 身份: 来闲鱼2年7个月 · 个人档案：暂无 · 实名认证、实人认证 · 芝麻信用未公开\n"
         "🧾 画像: 可见记录无商家迹象，按个人卖家对待；无卖家口碑，建议验货宝或担保交易\n"
         "🚩 信号: ⚠️ 卖家零评价 · ✅ 认证齐全\n"
         "📝 原因: 价格合适"
