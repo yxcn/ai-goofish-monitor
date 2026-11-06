@@ -1,8 +1,26 @@
 from src.title_filter import (
     filter_items_by_title,
     normalize_title_keywords,
+    title_filter_reason,
     title_matches_keywords,
 )
+
+
+def test_title_filter_reason_checks_exclusions_before_inclusions():
+    assert title_filter_reason("ThinkPad T14 Gen1 锐龙", ["T14"], ["主板", "键盘"]) is None
+    assert title_filter_reason("联想ThinkPad T14s Gen1主板 i7", ["T14"], ["主板"]) == "标题含排除词 主板"
+    assert title_filter_reason("华为P50 Pro", ["T14"], ["主板"]) == "标题不含 T14"
+    assert title_filter_reason("T14 原装键盘", [], ["键盘"]) == "标题含排除词 键盘"
+    assert title_filter_reason("anything", [], []) is None
+
+
+def test_filter_items_by_title_applies_exclusions_to_price_samples():
+    page = [
+        {"商品标题": "ThinkPad T14 Gen1", "当前售价": "¥1200"},
+        {"商品标题": "ThinkPad T14 主板", "当前售价": "¥600"},
+    ]
+    assert [i["当前售价"] for i in filter_items_by_title(page, ["T14"], ["主板"])] == ["¥1200"]
+    assert [i["当前售价"] for i in filter_items_by_title(page, [], ["主板"])] == ["¥1200"]
 
 
 def test_filter_items_by_title_keeps_only_matching_items_for_price_stats():

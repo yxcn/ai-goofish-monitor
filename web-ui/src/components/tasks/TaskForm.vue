@@ -34,6 +34,9 @@ const accountStrategy = ref<'auto' | 'fixed' | 'rotate'>('auto')
 const selectedAccountStateFile = ref(AUTO_ACCOUNT_VALUE)
 const keywordRulesInput = ref('')
 const titleIncludeInput = ref('')
+const extraKeywordsInput = ref('')
+const titleExcludeInput = ref('')
+const attributeRulesInput = ref('')
 const cronMode = ref<'preset' | 'custom'>('preset')
 
 // 常用 cron 预设选项
@@ -121,6 +124,15 @@ watch(() => [props.mode, props.initialData, props.defaultValues, props.defaultAc
       props.initialData.title_include_keywords ||
       []
     ).join(', ')
+    extraKeywordsInput.value = (
+      defaultValues.extra_keywords || props.initialData.extra_keywords || []
+    ).join(', ')
+    titleExcludeInput.value = (
+      defaultValues.title_exclude_keywords || props.initialData.title_exclude_keywords || []
+    ).join(', ')
+    attributeRulesInput.value = (
+      defaultValues.attribute_rules || props.initialData.attribute_rules || []
+    ).join('\n')
     // 编辑模式下，根据 cron 值判断模式
     const cronVal = defaultValues.cron ?? props.initialData.cron ?? ''
     cronMode.value = isPresetCronValue(cronVal) ? 'preset' : 'custom'
@@ -157,6 +169,9 @@ watch(() => [props.mode, props.initialData, props.defaultValues, props.defaultAc
       keywordRulesInput.value = defaultValues.keyword_rules.join('\n')
     }
     titleIncludeInput.value = (defaultValues.title_include_keywords || []).join(', ')
+    extraKeywordsInput.value = (defaultValues.extra_keywords || []).join(', ')
+    titleExcludeInput.value = (defaultValues.title_exclude_keywords || []).join(', ')
+    attributeRulesInput.value = (defaultValues.attribute_rules || []).join('\n')
     // 创建模式下，根据默认值判断模式
     const cronVal = defaultValues.cron ?? ''
     cronMode.value = isPresetCronValue(cronVal) ? 'preset' : 'custom'
@@ -257,6 +272,12 @@ function handleSubmit() {
   submitData.analyze_images = submitData.analyze_images !== false
   submitData.keyword_rules = decisionMode === 'keyword' ? keywordRules : []
   submitData.title_include_keywords = parseKeywordText(titleIncludeInput.value)
+  submitData.extra_keywords = parseKeywordText(extraKeywordsInput.value)
+  submitData.title_exclude_keywords = parseKeywordText(titleExcludeInput.value)
+  submitData.attribute_rules = String(attributeRulesInput.value || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
   if (decisionMode === 'keyword' && !submitData.description) {
     submitData.description = ''
   }
@@ -277,6 +298,19 @@ function handleSubmit() {
         <Input id="keyword" v-model="form.keyword" class="sm:col-span-3" :placeholder="t('tasks.form.keywordPlaceholder')" required />
       </div>
       <div class="grid gap-2 sm:grid-cols-4 sm:items-center sm:gap-4">
+        <Label for="extra-keywords" class="sm:text-right">{{ t('tasks.form.extraKeywords') }}</Label>
+        <div class="space-y-1 sm:col-span-3">
+          <Input
+            id="extra-keywords"
+            v-model="extraKeywordsInput"
+            :placeholder="t('tasks.form.extraKeywordsPlaceholder')"
+          />
+          <p class="text-xs text-gray-500">
+            {{ t('tasks.form.extraKeywordsHint') }}
+          </p>
+        </div>
+      </div>
+      <div class="grid gap-2 sm:grid-cols-4 sm:items-center sm:gap-4">
         <Label for="title-include-keywords" class="sm:text-right">{{ t('tasks.form.titleIncludeKeywords') }}</Label>
         <div class="space-y-1 sm:col-span-3">
           <Input
@@ -286,6 +320,33 @@ function handleSubmit() {
           />
           <p class="text-xs text-gray-500">
             {{ t('tasks.form.titleIncludeKeywordsHint') }}
+          </p>
+        </div>
+      </div>
+      <div class="grid gap-2 sm:grid-cols-4 sm:items-center sm:gap-4">
+        <Label for="title-exclude-keywords" class="sm:text-right">{{ t('tasks.form.titleExcludeKeywords') }}</Label>
+        <div class="space-y-1 sm:col-span-3">
+          <Input
+            id="title-exclude-keywords"
+            v-model="titleExcludeInput"
+            :placeholder="t('tasks.form.titleExcludeKeywordsPlaceholder')"
+          />
+          <p class="text-xs text-gray-500">
+            {{ t('tasks.form.titleExcludeKeywordsHint') }}
+          </p>
+        </div>
+      </div>
+      <div class="grid gap-2 sm:grid-cols-4 sm:gap-4">
+        <Label for="attribute-rules" class="pt-1 sm:pt-2 sm:text-right">{{ t('tasks.form.attributeRules') }}</Label>
+        <div class="space-y-2 sm:col-span-3">
+          <Textarea
+            id="attribute-rules"
+            v-model="attributeRulesInput"
+            class="min-h-[96px] font-mono text-sm"
+            :placeholder="t('tasks.form.attributeRulesPlaceholder')"
+          />
+          <p class="text-xs text-gray-500">
+            {{ t('tasks.form.attributeRulesHint') }}
           </p>
         </div>
       </div>

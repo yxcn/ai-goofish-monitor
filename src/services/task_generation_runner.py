@@ -40,7 +40,10 @@ def build_task_create(req: TaskGenerateRequest, criteria_file: str) -> TaskCreat
         region=req.region,
         decision_mode=req.decision_mode or "ai",
         keyword_rules=req.keyword_rules,
+        extra_keywords=req.extra_keywords,
         title_include_keywords=req.title_include_keywords,
+        title_exclude_keywords=req.title_exclude_keywords,
+        attribute_rules=req.attribute_rules,
     )
 
 

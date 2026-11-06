@@ -8,7 +8,11 @@ import os
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
+from src.attribute_rules import evaluate_attribute_rules, parse_attribute_rules
 from src.keyword_rule_engine import build_search_text, evaluate_keyword_rules
+
+# 属性硬规则挡掉的商品，analysis_source 用这个值，结果页能和 AI / 关键词结论区分开
+ATTRIBUTE_RULE_SOURCE = "attribute_rule"
 
 
 SellerLoader = Callable[[str], Awaitable[dict]]
@@ -30,6 +34,8 @@ class ItemAnalysisJob:
     seller_id: Optional[str]
     zhima_credit_text: Optional[str]
     registration_duration_text: str
+    # 属性硬规则（每条 "属性名 运算符 值"），不通过的商品不采集卖家、不调 AI
+    attribute_rules: tuple[str, ...] = ()
 
 
 class ItemAnalysisDispatcher:
@@ -72,11 +78,43 @@ class ItemAnalysisDispatcher:
     async def _process_job(self, job: ItemAnalysisJob) -> None:
         record = copy.deepcopy(job.final_record)
         item_data = record.get("商品信息", {}) or {}
-        record["卖家信息"] = await self._load_seller_info(job)
-        record["ai_analysis"] = await self._build_analysis_result(job, record)
+        rejection = self._check_attribute_rules(job, record)
+        if rejection is not None:
+            print(
+                f"   [属性预筛] 商品 #{item_data.get('商品ID', 'N/A')} 未通过："
+                f"{'；'.join(rejection['failed_rules'])}，跳过卖家采集和 AI 分析。"
+            )
+            record["卖家信息"] = {
+                "卖家芝麻信用": job.zhima_credit_text,
+                "卖家注册时长": job.registration_duration_text,
+            }
+            record["ai_analysis"] = rejection
+        else:
+            record["卖家信息"] = await self._load_seller_info(job)
+            record["ai_analysis"] = await self._build_analysis_result(job, record)
         if await self._saver(record, job.keyword):
             self.completed_count += 1
         await self._notify_if_recommended(item_data, record["ai_analysis"])
+
+    def _check_attribute_rules(self, job: ItemAnalysisJob, record: dict) -> Optional[dict]:
+        if not job.attribute_rules:
+            return None
+        try:
+            rules = parse_attribute_rules(job.attribute_rules)
+        except ValueError as exc:
+            print(f"   [属性预筛] 规则无法解析，本次忽略属性规则: {exc}")
+            return None
+        attributes = (record.get("商品信息") or {}).get("商品属性") or {}
+        failures = evaluate_attribute_rules(attributes, rules)
+        if not failures:
+            return None
+        return {
+            "analysis_source": ATTRIBUTE_RULE_SOURCE,
+            "is_recommended": False,
+            "reason": "属性预筛未通过：" + "；".join(failures),
+            "failed_rules": failures,
+            "keyword_hit_count": 0,
+        }
 
     async def _load_seller_info(self, job: ItemAnalysisJob) -> dict:
         seller_info = {}

@@ -44,6 +44,9 @@ SCHEMA_STATEMENTS = (
         decision_mode TEXT NOT NULL,
         keyword_rules_json TEXT NOT NULL,
         title_include_keywords_json TEXT NOT NULL DEFAULT '[]',
+        extra_keywords_json TEXT NOT NULL DEFAULT '[]',
+        title_exclude_keywords_json TEXT NOT NULL DEFAULT '[]',
+        attribute_rules_json TEXT NOT NULL DEFAULT '[]',
         is_running INTEGER NOT NULL
     )
     """,
@@ -144,17 +147,24 @@ def init_schema(conn: sqlite3.Connection) -> None:
     for statement in SCHEMA_STATEMENTS:
         conn.execute(statement)
     _migrate_result_items_status(conn)
-    _migrate_tasks_title_include_keywords(conn)
+    _migrate_tasks_json_list_columns(conn)
     conn.commit()
 
 
-def _migrate_tasks_title_include_keywords(conn: sqlite3.Connection) -> None:
-    """为旧库的 tasks 表补上标题预筛选列。"""
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()]
-    if "title_include_keywords_json" not in cols:
-        conn.execute(
-            "ALTER TABLE tasks ADD COLUMN title_include_keywords_json TEXT NOT NULL DEFAULT '[]'"
-        )
+# 后加的任务列表型字段，旧库缺哪列补哪列（都是 JSON 数组文本，默认空列表）
+TASK_JSON_LIST_COLUMNS = (
+    "title_include_keywords_json",
+    "extra_keywords_json",
+    "title_exclude_keywords_json",
+    "attribute_rules_json",
+)
+
+
+def _migrate_tasks_json_list_columns(conn: sqlite3.Connection) -> None:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    for column in TASK_JSON_LIST_COLUMNS:
+        if column not in cols:
+            conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]'")
 
 
 def _migrate_result_items_status(conn: sqlite3.Connection) -> None:

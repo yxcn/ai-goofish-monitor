@@ -60,10 +60,11 @@ from src.services.price_history_service import (
 )
 from src.services.result_storage_service import load_processed_link_keys
 from src.services.seller_profile_cache import SellerProfileCache
+from src.attribute_rules import normalize_attribute_rules
 from src.title_filter import (
     filter_items_by_title,
     normalize_title_keywords,
-    title_matches_keywords,
+    title_filter_reason,
 )
 from src.services.search_pagination import (
     advance_search_page,
@@ -525,9 +526,20 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     if decision_mode not in {"ai", "keyword"}:
         decision_mode = "ai"
     keyword_rules = task_config.get("keyword_rules") or []
-    title_include_keywords = normalize_title_keywords(
-        task_config.get("title_include_keywords")
-    )
+    title_include_keywords = normalize_title_keywords(task_config.get("title_include_keywords"))
+    title_exclude_keywords = normalize_title_keywords(task_config.get("title_exclude_keywords"))
+    # 附加搜索词：和主关键词依次搜索，共用去重、结果集和判断标准
+    extra_keywords = [
+        extra
+        for extra in normalize_title_keywords(task_config.get("extra_keywords"))
+        if extra.strip().lower() != str(keyword).strip().lower()
+    ]
+    search_keywords = [keyword] + extra_keywords
+    try:
+        attribute_rules = normalize_attribute_rules(task_config.get("attribute_rules"))
+    except ValueError as exc:
+        print(f"警告: 属性硬规则无法解析，本次运行忽略属性规则: {exc}")
+        attribute_rules = []
     free_shipping = task_config.get("free_shipping", False)
     raw_new_publish = task_config.get("new_publish_option") or ""
     new_publish_option = raw_new_publish.strip()
@@ -605,7 +617,9 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
         picked = proxy_pool.pick_random()
         return picked or selected_proxy
 
-    async def _run_scrape_attempt(state_file: str, proxy_server: Optional[str]) -> int:
+    async def _run_scrape_attempt(
+        state_file: str, proxy_server: Optional[str], search_keyword: str
+    ) -> int:
         processed_item_count = 0
         title_filtered_count = 0
         stop_scraping = False
@@ -713,7 +727,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
 
                 log_time("步骤 1 - 导航到搜索结果页...")
                 # 使用 'q' 参数构建正确的搜索URL，并进行URL编码
-                params = {"q": keyword}
+                params = {"q": search_keyword}
                 search_url = f"https://www.goofish.com/search?{urlencode(params)}"
                 log_time(f"目标URL: {search_url}")
 
@@ -1007,11 +1021,13 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                         break
                     # 价格快照和市场参考只统计通过标题预筛选的商品，
                     # 否则搜不到结果时闲鱼塞进来的推荐手机会把均价和性价比评分带偏
-                    market_items = filter_items_by_title(basic_items, title_include_keywords)
+                    market_items = filter_items_by_title(
+                        basic_items, title_include_keywords, title_exclude_keywords
+                    )
                     if len(market_items) != len(basic_items):
                         log_time(
-                            f"第 {page_num} 页 {len(basic_items)} 个商品中有 {len(market_items)} 个标题含 "
-                            f"{'/'.join(title_include_keywords)}，只有这些计入价格统计。"
+                            f"第 {page_num} 页 {len(basic_items)} 个商品中有 {len(market_items)} 个"
+                            "通过标题预筛选，只有这些计入价格统计。"
                         )
                     historical_snapshots.extend(
                         record_market_snapshots(
@@ -1040,14 +1056,17 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                             )
                             continue
 
-                        # 标题预筛选：闲鱼搜索会夹带无关商品，标题不含指定关键词的不再抓详情、不调 AI
-                        if not title_matches_keywords(
-                            item_data.get("商品标题", ""), title_include_keywords
-                        ):
+                        # 标题预筛选：闲鱼搜索会夹带无关商品，标题不含必需词或含排除词的不再抓详情、不调 AI
+                        skip_reason = title_filter_reason(
+                            item_data.get("商品标题", ""),
+                            title_include_keywords,
+                            title_exclude_keywords,
+                        )
+                        if skip_reason:
                             title_filtered_count += 1
                             log_time(
                                 f"[页内进度 {i}/{total_items_on_page}] 商品 '{item_data['商品标题'][:20]}...' "
-                                f"标题不含 {'/'.join(title_include_keywords)}，跳过。"
+                                f"{skip_reason}，跳过。"
                             )
                             continue
 
@@ -1153,6 +1172,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                 final_record = {
                                     "爬取时间": datetime.now().isoformat(),
                                     "搜索关键字": keyword,
+                                    "实际搜索词": search_keyword,
                                     "任务名称": task_config.get(
                                         "task_name", "Untitled Task"
                                     ),
@@ -1180,6 +1200,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                         analyze_images=analyze_images,
                                         prompt_text=ai_prompt_text,
                                         keyword_rules=tuple(keyword_rules or []),
+                                        attribute_rules=tuple(attribute_rules),
                                         final_record=final_record,
                                         seller_id=str(user_id) if user_id else None,
                                         zhima_credit_text=zhima_credit_text,
@@ -1255,9 +1276,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                     log_time("等待后台分析任务完成...")
                     await analysis_dispatcher.join()
                 if title_filtered_count:
-                    log_time(
-                        f"标题预筛选跳过了 {title_filtered_count} 个商品（标题不含 {'/'.join(title_include_keywords)}）。"
-                    )
+                    log_time(f"标题预筛选跳过了 {title_filtered_count} 个商品。")
                 log_time("任务执行完毕，浏览器将在5秒后自动关闭...")
                 await asyncio.sleep(5)
                 if debug_limit:
@@ -1353,7 +1372,14 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
             print(f"IP 轮换：使用代理 {proxy_server}")
 
         try:
-            processed_item_count += await _run_scrape_attempt(state_path, proxy_server)
+            for keyword_index, search_keyword in enumerate(search_keywords, 1):
+                if len(search_keywords) > 1:
+                    print(
+                        f"\n===== 搜索词 {keyword_index}/{len(search_keywords)}: {search_keyword} ====="
+                    )
+                processed_item_count += await _run_scrape_attempt(
+                    state_path, proxy_server, search_keyword
+                )
             last_error = ""
             FAILURE_GUARD.record_success(task_name_for_guard)
             break

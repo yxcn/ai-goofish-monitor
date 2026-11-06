@@ -21,10 +21,18 @@ def _row_to_task(row) -> Task:
     payload["free_shipping"] = bool(payload["free_shipping"])
     payload["is_running"] = bool(payload["is_running"])
     payload["keyword_rules"] = json.loads(payload.pop("keyword_rules_json") or "[]")
-    payload["title_include_keywords"] = json.loads(
-        payload.pop("title_include_keywords_json", None) or "[]"
-    )
+    for field in JSON_LIST_FIELDS:
+        payload[field] = json.loads(payload.pop(f"{field}_json", None) or "[]")
     return Task(**payload)
+
+
+# 以 JSON 数组存储的列表型字段：模型字段名 -> 列名为 <字段名>_json
+JSON_LIST_FIELDS = (
+    "title_include_keywords",
+    "extra_keywords",
+    "title_exclude_keywords",
+    "attribute_rules",
+)
 
 
 def find_task_by_name_sync(task_name: str) -> Task | None:
@@ -95,13 +103,17 @@ class SqliteTaskRepository(TaskRepository):
                     max_pages, personal_only, min_price, max_price, cron,
                     ai_prompt_base_file, ai_prompt_criteria_file, account_state_file,
                     account_strategy, free_shipping, new_publish_option, region,
-                    decision_mode, keyword_rules_json, title_include_keywords_json, is_running
+                    decision_mode, keyword_rules_json, title_include_keywords_json,
+                    extra_keywords_json, title_exclude_keywords_json, attribute_rules_json,
+                    is_running
                 ) VALUES (
                     :id, :task_name, :enabled, :keyword, :description, :analyze_images,
                     :max_pages, :personal_only, :min_price, :max_price, :cron,
                     :ai_prompt_base_file, :ai_prompt_criteria_file, :account_state_file,
                     :account_strategy, :free_shipping, :new_publish_option, :region,
-                    :decision_mode, :keyword_rules_json, :title_include_keywords_json, :is_running
+                    :decision_mode, :keyword_rules_json, :title_include_keywords_json,
+                    :extra_keywords_json, :title_exclude_keywords_json, :attribute_rules_json,
+                    :is_running
                 )
                 """,
                 payload,
@@ -132,8 +144,7 @@ class SqliteTaskRepository(TaskRepository):
         values["is_running"] = int(task.is_running)
         values["keyword_rules_json"] = json.dumps(task.keyword_rules or [], ensure_ascii=False)
         values.pop("keyword_rules", None)
-        values["title_include_keywords_json"] = json.dumps(
-            task.title_include_keywords or [], ensure_ascii=False
-        )
-        values.pop("title_include_keywords", None)
+        for field in JSON_LIST_FIELDS:
+            values[f"{field}_json"] = json.dumps(getattr(task, field) or [], ensure_ascii=False)
+            values.pop(field, None)
         return values

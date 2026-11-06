@@ -22,8 +22,14 @@ export interface Task {
   region?: string | null;
   decision_mode: 'ai' | 'keyword';
   keyword_rules: string[];
+  /** 附加搜索词：和 keyword 依次搜索，结果共用同一个结果集 */
+  extra_keywords: string[];
   /** 标题预筛选：标题不含任一关键词的商品在抓详情前跳过；空数组表示不筛选 */
   title_include_keywords: string[];
+  /** 标题含任一排除词的商品在抓详情前跳过 */
+  title_exclude_keywords: string[];
+  /** 属性硬规则，每条 "属性名 运算符 值"，不通过的商品不调 AI */
+  attribute_rules: string[];
   is_running: boolean;
 }
 
@@ -75,5 +81,8 @@ export interface TaskGenerateRequest {
   region?: string | null;
   decision_mode?: 'ai' | 'keyword';
   keyword_rules?: string[];
+  extra_keywords?: string[];
   title_include_keywords?: string[];
+  title_exclude_keywords?: string[];
+  attribute_rules?: string[];
 }

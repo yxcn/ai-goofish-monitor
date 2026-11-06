@@ -42,24 +42,46 @@ def normalize_title_keywords(values: Iterable[str] | str | None) -> List[str]:
     return normalized
 
 
+def title_filter_reason(
+    title: str,
+    include_keywords: Iterable[str] | str | None,
+    exclude_keywords: Iterable[str] | str | None = None,
+) -> str | None:
+    """标题没通过预筛选时返回原因，通过时返回 None。
+
+    先看排除词（标题含任一排除词即跳过，用来挡主板、键盘、配件这类），
+    再看必须包含的词。
+    """
+    excluded = normalize_title_keywords(exclude_keywords)
+    if excluded:
+        haystack = _normalize(title)
+        for keyword in excluded:
+            if _normalize(keyword) in haystack:
+                return f"标题含排除词 {keyword}"
+    included = normalize_title_keywords(include_keywords)
+    if included and not title_matches_keywords(title, included):
+        return f"标题不含 {'/'.join(included)}"
+    return None
+
+
 def filter_items_by_title(
     items: Iterable[dict],
     keywords: Iterable[str] | str | None,
+    exclude_keywords: Iterable[str] | str | None = None,
     title_key: str = "商品标题",
 ) -> List[dict]:
-    """只保留标题通过预筛选的商品；没有配置关键词时原样返回。
+    """只保留标题通过预筛选的商品；没有配置任何关键词时原样返回。
 
     价格快照和市场参考也要走这一步，否则闲鱼在搜不到结果时塞进来的
     推荐商品（往往是手机）会把均价、中位数和性价比评分全部带偏。
     """
-    normalized_keywords = normalize_title_keywords(keywords)
     item_list = list(items)
-    if not normalized_keywords:
+    if not normalize_title_keywords(keywords) and not normalize_title_keywords(exclude_keywords):
         return item_list
     return [
         item
         for item in item_list
-        if title_matches_keywords(str(item.get(title_key) or ""), normalized_keywords)
+        if title_filter_reason(str(item.get(title_key) or ""), keywords, exclude_keywords) is None
     ]
 
 

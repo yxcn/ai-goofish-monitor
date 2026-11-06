@@ -13,6 +13,7 @@ from src.services.account_strategy_service import (
     clean_account_state_file,
     normalize_account_strategy,
 )
+from src.attribute_rules import normalize_attribute_rules
 from src.title_filter import normalize_title_keywords
 
 
@@ -130,8 +131,13 @@ class Task(BaseModel):
     region: Optional[str] = None
     decision_mode: Literal["ai", "keyword"] = "ai"
     keyword_rules: List[str] = Field(default_factory=list)
-    # 标题预筛选：标题不含任一关键词的商品，在抓详情和 AI 分析前直接跳过
+    # 附加搜索词：和 keyword 一起依次搜索，结果共用同一个结果集和判断标准
+    extra_keywords: List[str] = Field(default_factory=list)
+    # 标题预筛选：标题不含任一关键词、或含任一排除词的商品，在抓详情和 AI 分析前直接跳过
     title_include_keywords: List[str] = Field(default_factory=list)
+    title_exclude_keywords: List[str] = Field(default_factory=list)
+    # 属性硬规则：用详情接口的结构化属性在调 AI 之前挡掉明显不合格的商品
+    attribute_rules: List[str] = Field(default_factory=list)
     is_running: bool = False
 
     @model_validator(mode="before")
@@ -144,10 +150,15 @@ class Task(BaseModel):
     def normalize_keyword_rules(cls, value):
         return _normalize_keyword_values(value)
 
-    @field_validator("title_include_keywords", mode="before")
+    @field_validator("extra_keywords", "title_include_keywords", "title_exclude_keywords", mode="before")
     @classmethod
-    def normalize_title_include_keywords(cls, value):
+    def normalize_title_keyword_lists(cls, value):
         return normalize_title_keywords(value)
+
+    @field_validator("attribute_rules", mode="before")
+    @classmethod
+    def normalize_attribute_rule_lines(cls, value):
+        return normalize_attribute_rules(value)
 
     def can_start(self) -> bool:
         """检查任务是否可以启动"""
@@ -187,7 +198,10 @@ class TaskCreate(BaseModel):
     region: Optional[str] = None
     decision_mode: Literal["ai", "keyword"] = "ai"
     keyword_rules: List[str] = Field(default_factory=list)
+    extra_keywords: List[str] = Field(default_factory=list)
     title_include_keywords: List[str] = Field(default_factory=list)
+    title_exclude_keywords: List[str] = Field(default_factory=list)
+    attribute_rules: List[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -219,10 +233,15 @@ class TaskCreate(BaseModel):
     def normalize_keyword_rules(cls, value):
         return _normalize_keyword_values(value)
 
-    @field_validator("title_include_keywords", mode="before")
+    @field_validator("extra_keywords", "title_include_keywords", "title_exclude_keywords", mode="before")
     @classmethod
-    def normalize_title_include_keywords(cls, value):
+    def normalize_title_keyword_lists(cls, value):
         return normalize_title_keywords(value)
+
+    @field_validator("attribute_rules", mode="before")
+    @classmethod
+    def normalize_attribute_rule_lines(cls, value):
+        return normalize_attribute_rules(value)
 
     @model_validator(mode="after")
     def validate_decision_mode_payload(self):
@@ -260,7 +279,10 @@ class TaskUpdate(BaseModel):
     region: Optional[str] = None
     decision_mode: Optional[Literal["ai", "keyword"]] = None
     keyword_rules: Optional[List[str]] = None
+    extra_keywords: Optional[List[str]] = None
     title_include_keywords: Optional[List[str]] = None
+    title_exclude_keywords: Optional[List[str]] = None
+    attribute_rules: Optional[List[str]] = None
     is_running: Optional[bool] = None
 
     @model_validator(mode="before")
@@ -293,13 +315,20 @@ class TaskUpdate(BaseModel):
     def normalize_keyword_rules(cls, value):
         return _normalize_keyword_values(value)
 
-    @field_validator("title_include_keywords", mode="before")
+    @field_validator("extra_keywords", "title_include_keywords", "title_exclude_keywords", mode="before")
     @classmethod
-    def normalize_title_include_keywords(cls, value):
+    def normalize_title_keyword_lists(cls, value):
         # None 表示本次不改这个字段；空字符串/空列表表示清空
         if value is None:
             return None
         return normalize_title_keywords(value)
+
+    @field_validator("attribute_rules", mode="before")
+    @classmethod
+    def normalize_attribute_rule_lines(cls, value):
+        if value is None:
+            return None
+        return normalize_attribute_rules(value)
 
     @model_validator(mode="after")
     def validate_partial_keyword_payload(self):
@@ -333,7 +362,10 @@ class TaskGenerateRequest(BaseModel):
     region: Optional[str] = None
     decision_mode: Literal["ai", "keyword"] = "ai"
     keyword_rules: List[str] = Field(default_factory=list)
+    extra_keywords: List[str] = Field(default_factory=list)
     title_include_keywords: List[str] = Field(default_factory=list)
+    title_exclude_keywords: List[str] = Field(default_factory=list)
+    attribute_rules: List[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -345,10 +377,15 @@ class TaskGenerateRequest(BaseModel):
     def convert_price_to_str(cls, value):
         return _normalize_price_value(value)
 
-    @field_validator("title_include_keywords", mode="before")
+    @field_validator("extra_keywords", "title_include_keywords", "title_exclude_keywords", mode="before")
     @classmethod
-    def normalize_title_include_keywords(cls, value):
+    def normalize_title_keyword_lists(cls, value):
         return normalize_title_keywords(value)
+
+    @field_validator("attribute_rules", mode="before")
+    @classmethod
+    def normalize_attribute_rule_lines(cls, value):
+        return normalize_attribute_rules(value)
 
     @field_validator("cron", mode="before")
     @classmethod

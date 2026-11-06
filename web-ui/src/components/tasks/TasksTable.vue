@@ -179,12 +179,36 @@ const emit = defineEmits<{
                   {{ task.region }}
                 </Badge>
                 <Badge
+                  v-if="task.extra_keywords?.length"
+                  variant="outline"
+                  class="border-sky-200/70 bg-sky-50 text-sky-700"
+                  :title="task.extra_keywords.join(', ')"
+                >
+                  {{ t('tasks.table.extraKeywords', { count: task.extra_keywords.length }) }}
+                </Badge>
+                <Badge
                   v-if="task.title_include_keywords?.length"
                   variant="outline"
                   class="border-amber-200/70 bg-amber-50 text-amber-700"
                   :title="task.title_include_keywords.join(', ')"
                 >
                   {{ t('tasks.table.titleIncludeKeywords', { keywords: task.title_include_keywords.join(' / ') }) }}
+                </Badge>
+                <Badge
+                  v-if="task.title_exclude_keywords?.length"
+                  variant="outline"
+                  class="border-rose-200/70 bg-rose-50 text-rose-700"
+                  :title="task.title_exclude_keywords.join(', ')"
+                >
+                  {{ t('tasks.table.titleExcludeKeywords', { keywords: task.title_exclude_keywords.join(' / ') }) }}
+                </Badge>
+                <Badge
+                  v-if="task.attribute_rules?.length"
+                  variant="outline"
+                  class="border-violet-200/70 bg-violet-50 text-violet-700"
+                  :title="task.attribute_rules.join('\n')"
+                >
+                  {{ t('tasks.table.attributeRules', { count: task.attribute_rules.length }) }}
                 </Badge>
               </div>
             </div>
@@ -406,11 +430,32 @@ const emit = defineEmits<{
                     <MapPin class="w-2.5 h-2.5" /> {{ task.region }}
                   </div>
                   <div
+                    v-if="task.extra_keywords?.length"
+                    class="flex items-center text-[9px] font-bold text-sky-700 px-1.5 h-4 bg-sky-50/60 rounded border border-sky-100 truncate max-w-[120px]"
+                    :title="task.extra_keywords.join(', ')"
+                  >
+                    {{ t('tasks.table.extraKeywords', { count: task.extra_keywords.length }) }}
+                  </div>
+                  <div
                     v-if="task.title_include_keywords?.length"
                     class="flex items-center text-[9px] font-bold text-amber-700 px-1.5 h-4 bg-amber-50/60 rounded border border-amber-100 truncate max-w-[120px]"
                     :title="task.title_include_keywords.join(', ')"
                   >
                     {{ t('tasks.table.titleIncludeKeywords', { keywords: task.title_include_keywords.join(' / ') }) }}
+                  </div>
+                  <div
+                    v-if="task.title_exclude_keywords?.length"
+                    class="flex items-center text-[9px] font-bold text-rose-700 px-1.5 h-4 bg-rose-50/60 rounded border border-rose-100 truncate max-w-[120px]"
+                    :title="task.title_exclude_keywords.join(', ')"
+                  >
+                    {{ t('tasks.table.titleExcludeKeywords', { keywords: task.title_exclude_keywords.join(' / ') }) }}
+                  </div>
+                  <div
+                    v-if="task.attribute_rules?.length"
+                    class="flex items-center text-[9px] font-bold text-violet-700 px-1.5 h-4 bg-violet-50/60 rounded border border-violet-100 truncate max-w-[120px]"
+                    :title="task.attribute_rules.join('\n')"
+                  >
+                    {{ t('tasks.table.attributeRules', { count: task.attribute_rules.length }) }}
                   </div>
                 </div>
               </div>
