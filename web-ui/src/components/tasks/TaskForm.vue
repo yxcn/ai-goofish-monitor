@@ -33,6 +33,7 @@ const form = ref<any>({})
 const accountStrategy = ref<'auto' | 'fixed' | 'rotate'>('auto')
 const selectedAccountStateFile = ref(AUTO_ACCOUNT_VALUE)
 const keywordRulesInput = ref('')
+const titleIncludeInput = ref('')
 const cronMode = ref<'preset' | 'custom'>('preset')
 
 // 常用 cron 预设选项
@@ -115,6 +116,11 @@ watch(() => [props.mode, props.initialData, props.defaultValues, props.defaultAc
       decision_mode: defaultValues.decision_mode || props.initialData.decision_mode || 'ai',
     }
     keywordRulesInput.value = (defaultValues.keyword_rules || props.initialData.keyword_rules || []).join('\n')
+    titleIncludeInput.value = (
+      defaultValues.title_include_keywords ||
+      props.initialData.title_include_keywords ||
+      []
+    ).join(', ')
     // 编辑模式下，根据 cron 值判断模式
     const cronVal = defaultValues.cron ?? props.initialData.cron ?? ''
     cronMode.value = isPresetCronValue(cronVal) ? 'preset' : 'custom'
@@ -150,6 +156,7 @@ watch(() => [props.mode, props.initialData, props.defaultValues, props.defaultAc
     if (defaultValues.keyword_rules && defaultValues.keyword_rules.length > 0) {
       keywordRulesInput.value = defaultValues.keyword_rules.join('\n')
     }
+    titleIncludeInput.value = (defaultValues.title_include_keywords || []).join(', ')
     // 创建模式下，根据默认值判断模式
     const cronVal = defaultValues.cron ?? ''
     cronMode.value = isPresetCronValue(cronVal) ? 'preset' : 'custom'
@@ -249,6 +256,7 @@ function handleSubmit() {
   submitData.account_strategy = currentAccountStrategy
   submitData.analyze_images = submitData.analyze_images !== false
   submitData.keyword_rules = decisionMode === 'keyword' ? keywordRules : []
+  submitData.title_include_keywords = parseKeywordText(titleIncludeInput.value)
   if (decisionMode === 'keyword' && !submitData.description) {
     submitData.description = ''
   }
@@ -267,6 +275,19 @@ function handleSubmit() {
       <div class="grid gap-2 sm:grid-cols-4 sm:items-center sm:gap-4">
         <Label for="keyword" class="sm:text-right">{{ t('tasks.form.keyword') }}</Label>
         <Input id="keyword" v-model="form.keyword" class="sm:col-span-3" :placeholder="t('tasks.form.keywordPlaceholder')" required />
+      </div>
+      <div class="grid gap-2 sm:grid-cols-4 sm:items-center sm:gap-4">
+        <Label for="title-include-keywords" class="sm:text-right">{{ t('tasks.form.titleIncludeKeywords') }}</Label>
+        <div class="space-y-1 sm:col-span-3">
+          <Input
+            id="title-include-keywords"
+            v-model="titleIncludeInput"
+            :placeholder="t('tasks.form.titleIncludeKeywordsPlaceholder')"
+          />
+          <p class="text-xs text-gray-500">
+            {{ t('tasks.form.titleIncludeKeywordsHint') }}
+          </p>
+        </div>
       </div>
       <div class="grid gap-2 sm:grid-cols-4 sm:items-center sm:gap-4">
         <Label class="sm:text-right">{{ t('tasks.form.decisionMode') }}</Label>

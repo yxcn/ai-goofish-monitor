@@ -22,6 +22,8 @@ export interface Task {
   region?: string | null;
   decision_mode: 'ai' | 'keyword';
   keyword_rules: string[];
+  /** 标题预筛选：标题不含任一关键词的商品在抓详情前跳过；空数组表示不筛选 */
+  title_include_keywords: string[];
   is_running: boolean;
 }
 
@@ -73,4 +75,5 @@ export interface TaskGenerateRequest {
   region?: string | null;
   decision_mode?: 'ai' | 'keyword';
   keyword_rules?: string[];
+  title_include_keywords?: string[];
 }

@@ -178,6 +178,14 @@ const emit = defineEmits<{
                   <MapPin class="mr-1 h-3 w-3" />
                   {{ task.region }}
                 </Badge>
+                <Badge
+                  v-if="task.title_include_keywords?.length"
+                  variant="outline"
+                  class="border-amber-200/70 bg-amber-50 text-amber-700"
+                  :title="task.title_include_keywords.join(', ')"
+                >
+                  {{ t('tasks.table.titleIncludeKeywords', { keywords: task.title_include_keywords.join(' / ') }) }}
+                </Badge>
               </div>
             </div>
 
@@ -396,6 +404,13 @@ const emit = defineEmits<{
                   </Badge>
                   <div v-if="task.region" class="flex items-center gap-0.5 text-[9px] font-bold text-slate-400 px-1.5 h-4 bg-slate-50/50 rounded border border-slate-100 truncate max-w-[80px]">
                     <MapPin class="w-2.5 h-2.5" /> {{ task.region }}
+                  </div>
+                  <div
+                    v-if="task.title_include_keywords?.length"
+                    class="flex items-center text-[9px] font-bold text-amber-700 px-1.5 h-4 bg-amber-50/60 rounded border border-amber-100 truncate max-w-[120px]"
+                    :title="task.title_include_keywords.join(', ')"
+                  >
+                    {{ t('tasks.table.titleIncludeKeywords', { keywords: task.title_include_keywords.join(' / ') }) }}
                   </div>
                 </div>
               </div>

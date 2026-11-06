@@ -60,6 +60,7 @@ from src.services.price_history_service import (
 )
 from src.services.result_storage_service import load_processed_link_keys
 from src.services.seller_profile_cache import SellerProfileCache
+from src.title_filter import normalize_title_keywords, title_matches_keywords
 from src.services.search_pagination import (
     advance_search_page,
     is_search_results_response,
@@ -520,6 +521,9 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     if decision_mode not in {"ai", "keyword"}:
         decision_mode = "ai"
     keyword_rules = task_config.get("keyword_rules") or []
+    title_include_keywords = normalize_title_keywords(
+        task_config.get("title_include_keywords")
+    )
     free_shipping = task_config.get("free_shipping", False)
     raw_new_publish = task_config.get("new_publish_option") or ""
     new_publish_option = raw_new_publish.strip()
@@ -599,6 +603,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
 
     async def _run_scrape_attempt(state_file: str, proxy_server: Optional[str]) -> int:
         processed_item_count = 0
+        title_filtered_count = 0
         stop_scraping = False
 
         if not os.path.exists(state_file):
@@ -1023,6 +1028,17 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                             )
                             continue
 
+                        # 标题预筛选：闲鱼搜索会夹带无关商品，标题不含指定关键词的不再抓详情、不调 AI
+                        if not title_matches_keywords(
+                            item_data.get("商品标题", ""), title_include_keywords
+                        ):
+                            title_filtered_count += 1
+                            log_time(
+                                f"[页内进度 {i}/{total_items_on_page}] 商品 '{item_data['商品标题'][:20]}...' "
+                                f"标题不含 {'/'.join(title_include_keywords)}，跳过。"
+                            )
+                            continue
+
                         log_time(
                             f"[页内进度 {i}/{total_items_on_page}] 发现新商品，获取详情: {item_data['商品标题'][:30]}..."
                         )
@@ -1226,6 +1242,10 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 if analysis_dispatcher is not None:
                     log_time("等待后台分析任务完成...")
                     await analysis_dispatcher.join()
+                if title_filtered_count:
+                    log_time(
+                        f"标题预筛选跳过了 {title_filtered_count} 个商品（标题不含 {'/'.join(title_include_keywords)}）。"
+                    )
                 log_time("任务执行完毕，浏览器将在5秒后自动关闭...")
                 await asyncio.sleep(5)
                 if debug_limit:

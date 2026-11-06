@@ -43,6 +43,7 @@ SCHEMA_STATEMENTS = (
         region TEXT,
         decision_mode TEXT NOT NULL,
         keyword_rules_json TEXT NOT NULL,
+        title_include_keywords_json TEXT NOT NULL DEFAULT '[]',
         is_running INTEGER NOT NULL
     )
     """,
@@ -143,7 +144,17 @@ def init_schema(conn: sqlite3.Connection) -> None:
     for statement in SCHEMA_STATEMENTS:
         conn.execute(statement)
     _migrate_result_items_status(conn)
+    _migrate_tasks_title_include_keywords(conn)
     conn.commit()
+
+
+def _migrate_tasks_title_include_keywords(conn: sqlite3.Connection) -> None:
+    """为旧库的 tasks 表补上标题预筛选列。"""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()]
+    if "title_include_keywords_json" not in cols:
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN title_include_keywords_json TEXT NOT NULL DEFAULT '[]'"
+        )
 
 
 def _migrate_result_items_status(conn: sqlite3.Connection) -> None:
