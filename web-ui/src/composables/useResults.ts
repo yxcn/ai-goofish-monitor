@@ -1,4 +1,4 @@
-import { ref, reactive, watch, onMounted, computed } from 'vue'
+import { ref, reactive, watch, onMounted, onScopeDispose, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import type { ResultInsights, ResultItem } from '@/types/result.d.ts'
@@ -200,6 +200,14 @@ export function useResults() {
       readyTimer = null
     }, readyDelayMs)
   }
+
+  // The ready delay may still be pending when the view unmounts (fast navigation away).
+  onScopeDispose(() => {
+    if (readyTimer) {
+      clearTimeout(readyTimer)
+      readyTimer = null
+    }
+  })
 
   // Real-time updates
   on('results_updated', async () => {

@@ -59,7 +59,8 @@ export interface SellerInfo {
 export interface AiAnalysis {
   is_recommended: boolean;
   reason: string;
-  analysis_source?: 'ai' | 'keyword';
+  // 'attribute_rule': blocked by attribute pre-filter; 'skipped': SKIP_AI_ANALYSIS pushed without AI review
+  analysis_source?: 'ai' | 'keyword' | 'attribute_rule' | 'skipped';
   keyword_hit_count?: number;
   value_score?: number;
   value_summary?: string;

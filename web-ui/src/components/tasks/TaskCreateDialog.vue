@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { createTaskWithAI } from '@/api/tasks'
 import { useTaskGenerationJob } from '@/composables/useTaskGenerationJob'
 import type { TaskGenerateRequest } from '@/types/task.d.ts'
-import { parseTaskFormDefaults } from '@/lib/taskFormQuery'
+import { parseTaskFormDefaults, TASK_FORM_QUERY_KEYS, withoutQueryKeys } from '@/lib/taskFormQuery'
+import type { TaskFormDefaults } from '@/lib/taskFormQuery'
 import TaskForm from '@/components/tasks/TaskForm.vue'
 import TaskGenerationDialog from '@/components/tasks/TaskGenerationDialog.vue'
 import { Button } from '@/components/ui/button'
@@ -29,11 +30,15 @@ const emit = defineEmits<{
 }>()
 
 const route = useRoute()
+const router = useRouter()
 const isFormOpen = ref(false)
 const isProgressOpen = ref(false)
 const isSubmitting = ref(false)
-const defaultAccountPath = ref('')
-const defaultValues = ref({})
+// Snapshot of the `?account=` / form-default query keys taken when they appear in the URL.
+// The path is resolved lazily so `accountOptions` arriving later still fills the account in.
+const queryAccountName = ref('')
+const defaultValues = ref<TaskFormDefaults>({})
+const defaultAccountPath = computed(() => (queryAccountName.value ? resolveAccountPath(queryAccountName.value) : ''))
 const {
   activeJob,
   pollingError,
@@ -74,18 +79,34 @@ async function handleCreateTask(data: TaskGenerateRequest) {
   }
 }
 
+// `?create=1` opens the dialog once. The dialog/default keys are dropped from the URL as
+// soon as it opens (unrelated keys are kept), so a reload or a later `accountOptions`
+// update cannot reopen it or reset the form. The defaults themselves live in the snapshot
+// above, not in the URL.
+const CREATE_DIALOG_QUERY_KEYS: string[] = ['create', ...TASK_FORM_QUERY_KEYS]
 watch(
-  () => [route.query, props.accountOptions],
-  () => {
-    const accountName = typeof route.query.account === 'string' ? route.query.account : ''
-    defaultAccountPath.value = accountName ? resolveAccountPath(accountName) : ''
-    defaultValues.value = parseTaskFormDefaults(route.query)
-    if (route.query.create === '1') {
-      isFormOpen.value = true
+  () => route.query,
+  (query) => {
+    const defaults = parseTaskFormDefaults(query)
+    const accountName = typeof query.account === 'string' ? query.account : ''
+    if (accountName || Object.keys(defaults).length > 0) {
+      queryAccountName.value = accountName
+      defaultValues.value = defaults
     }
+    if (query.create !== '1') return
+    isFormOpen.value = true
+    const rest = withoutQueryKeys(query, CREATE_DIALOG_QUERY_KEYS)
+    if (rest) router.replace({ query: rest })
   },
   { immediate: true }
 )
+
+// Closing drops the snapshot so the next manual open starts from a blank form.
+watch(isFormOpen, (open) => {
+  if (open) return
+  queryAccountName.value = ''
+  defaultValues.value = {}
+})
 
 watch(
   () => activeJob.value?.status,

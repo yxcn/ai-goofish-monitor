@@ -29,17 +29,22 @@ export const TASK_FORM_QUERY_KEYS = [
 export const TASK_DIALOG_QUERY_KEYS = ['create', 'edit', ...TASK_FORM_QUERY_KEYS] as const
 
 /**
- * Return `query` without any task-dialog key, or `null` when there is nothing to strip.
+ * Return `query` without `keys`, or `null` when none of them is present.
  * Unrelated keys are kept as-is.
  */
-export function withoutTaskDialogQuery(query: LocationQuery): LocationQuery | null {
-  const strip = new Set<string>(TASK_DIALOG_QUERY_KEYS)
+export function withoutQueryKeys(query: LocationQuery, keys: Iterable<string>): LocationQuery | null {
+  const strip = new Set<string>(keys)
   if (!Object.keys(query).some((key) => strip.has(key))) return null
   const rest: LocationQuery = {}
   for (const [key, value] of Object.entries(query)) {
     if (!strip.has(key)) rest[key] = value
   }
   return rest
+}
+
+/** Return `query` without any task-dialog key, or `null` when there is nothing to strip. */
+export function withoutTaskDialogQuery(query: LocationQuery): LocationQuery | null {
+  return withoutQueryKeys(query, TASK_DIALOG_QUERY_KEYS)
 }
 
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on'])

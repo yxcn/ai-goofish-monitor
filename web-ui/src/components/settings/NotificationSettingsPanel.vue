@@ -243,36 +243,36 @@ function resolveChannelBadge(channel: ChannelKey) {
     <div v-else class="grid gap-4">
       <Card class="app-surface-subtle overflow-hidden border-l-4 border-l-sky-500">
         <CardHeader><CardTitle class="flex items-center gap-2"><Radio class="h-4 w-4 text-sky-600" /> Ntfy</CardTitle><CardDescription>{{ t('notifyPanel.ntfy.description') }}</CardDescription></CardHeader>
-        <CardContent><Label>Ntfy Topic URL</Label><Input :model-value="form.NTFY_TOPIC_URL ?? ''" placeholder="https://ntfy.sh/topic" @update:model-value="(value) => updateField('NTFY_TOPIC_URL', String(value))" /></CardContent>
-        <div v-if="testResults.ntfy" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('ntfy')">{{ testResults.ntfy.label }}：{{ testResults.ntfy.message }}</div>
+        <CardContent><Label>{{ t('notifyPanel.ntfy.urlLabel') }}</Label><Input :model-value="form.NTFY_TOPIC_URL ?? ''" placeholder="https://ntfy.sh/topic" @update:model-value="(value) => updateField('NTFY_TOPIC_URL', String(value))" /></CardContent>
+        <div v-if="testResults.ntfy" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('ntfy')">{{ testResults.ntfy.label }}{{ t('common.colon') }}{{ testResults.ntfy.message }}</div>
         <CardFooter class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><Badge :variant="isChannelConfigured('ntfy') ? 'default' : 'outline'">{{ resolveChannelBadge('ntfy') }}</Badge><Button variant="outline" size="sm" :disabled="props.isSaving || testingChannel !== null" @click="handleTest('ntfy')"><TestTube2 class="h-4 w-4" />{{ testingChannel === 'ntfy' ? t('common.testing') : t('notifyPanel.testThisChannel') }}</Button></CardFooter>
       </Card>
 
       <Card class="app-surface-subtle overflow-hidden border-l-4 border-l-green-500">
         <CardHeader><CardTitle>PushPlus</CardTitle><CardDescription>{{ t('notifyPanel.pushplus.description') }}</CardDescription></CardHeader>
         <CardContent class="grid gap-4 md:grid-cols-2">
-          <div class="grid gap-2"><Label>Token</Label><Input type="password" :model-value="form.PUSHPLUS_TOKEN ?? ''" :placeholder="t('notifyPanel.secretKeepPlaceholder')" @update:model-value="(value) => updateSecretField('PUSHPLUS_TOKEN', String(value))" /></div>
-          <div class="grid gap-2"><Label>Topic</Label><Input :model-value="form.PUSHPLUS_TOPIC ?? ''" :placeholder="t('notifyPanel.pushplus.topicPlaceholder')" @update:model-value="(value) => updateField('PUSHPLUS_TOPIC', String(value))" /></div>
+          <div class="grid gap-2"><Label>{{ t('notifyPanel.pushplus.tokenLabel') }}</Label><Input type="password" :model-value="form.PUSHPLUS_TOKEN ?? ''" :placeholder="t('notifyPanel.secretKeepPlaceholder')" @update:model-value="(value) => updateSecretField('PUSHPLUS_TOKEN', String(value))" /></div>
+          <div class="grid gap-2"><Label>{{ t('notifyPanel.pushplus.topicLabel') }}</Label><Input :model-value="form.PUSHPLUS_TOPIC ?? ''" :placeholder="t('notifyPanel.pushplus.topicPlaceholder')" @update:model-value="(value) => updateField('PUSHPLUS_TOPIC', String(value))" /></div>
         </CardContent>
-        <div v-if="testResults.pushplus" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('pushplus')">{{ testResults.pushplus.label }}：{{ testResults.pushplus.message }}</div>
+        <div v-if="testResults.pushplus" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('pushplus')">{{ testResults.pushplus.label }}{{ t('common.colon') }}{{ testResults.pushplus.message }}</div>
         <CardFooter class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><Badge :variant="isChannelConfigured('pushplus') ? 'default' : 'outline'">{{ resolveChannelBadge('pushplus') }}</Badge><div class="flex flex-wrap gap-2"><Button variant="ghost" size="sm" :disabled="props.isSaving" @click="clearChannel('pushplus')"><Trash2 class="h-4 w-4" />{{ t('notifyPanel.clear') }}</Button><Button variant="outline" size="sm" :disabled="props.isSaving || testingChannel !== null" @click="handleTest('pushplus')"><TestTube2 class="h-4 w-4" />{{ testingChannel === 'pushplus' ? t('common.testing') : t('notifyPanel.test') }}</Button></div></CardFooter>
       </Card>
 
       <div class="grid gap-4 xl:grid-cols-2">
         <Card class="app-surface-subtle overflow-hidden border-l-4 border-l-amber-500">
           <CardHeader><CardTitle>Bark</CardTitle><CardDescription>{{ t('notifyPanel.bark.description') }}</CardDescription></CardHeader>
-          <CardContent class="space-y-2"><Label>Bark URL</Label><Input :model-value="form.BARK_URL ?? ''" :placeholder="t('notifyPanel.secretPlaceholder')" @update:model-value="(value) => updateSecretField('BARK_URL', String(value))" /><p class="text-xs text-slate-500">{{ secretConfigured.BARK_URL ? t('notifyPanel.bark.configuredHint') : t('notifyPanel.notConfigured') }}</p></CardContent>
-          <div v-if="testResults.bark" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('bark')">{{ testResults.bark.label }}：{{ testResults.bark.message }}</div>
+          <CardContent class="space-y-2"><Label>{{ t('notifyPanel.bark.urlLabel') }}</Label><Input :model-value="form.BARK_URL ?? ''" :placeholder="t('notifyPanel.secretPlaceholder')" @update:model-value="(value) => updateSecretField('BARK_URL', String(value))" /><p class="text-xs text-slate-500">{{ secretConfigured.BARK_URL ? t('notifyPanel.bark.configuredHint') : t('notifyPanel.notConfigured') }}</p></CardContent>
+          <div v-if="testResults.bark" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('bark')">{{ testResults.bark.label }}{{ t('common.colon') }}{{ testResults.bark.message }}</div>
           <CardFooter class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><Badge :variant="isChannelConfigured('bark') ? 'default' : 'outline'">{{ resolveChannelBadge('bark') }}</Badge><div class="flex flex-wrap gap-2"><Button variant="ghost" size="sm" :disabled="props.isSaving" @click="clearChannel('bark')"><Trash2 class="h-4 w-4" />{{ t('notifyPanel.clear') }}</Button><Button variant="outline" size="sm" :disabled="props.isSaving || testingChannel !== null" @click="handleTest('bark')"><TestTube2 class="h-4 w-4" />{{ testingChannel === 'bark' ? t('common.testing') : t('notifyPanel.test') }}</Button></div></CardFooter>
         </Card>
 
         <Card class="app-surface-subtle overflow-hidden border-l-4 border-l-violet-500">
           <CardHeader><CardTitle>Gotify</CardTitle><CardDescription>{{ t('notifyPanel.gotify.description') }}</CardDescription></CardHeader>
           <CardContent class="grid gap-4 md:grid-cols-2">
-            <div class="grid gap-2"><Label>Gotify URL</Label><Input :model-value="form.GOTIFY_URL ?? ''" placeholder="https://gotify.example.com" @update:model-value="(value) => updateField('GOTIFY_URL', String(value))" /></div>
-            <div class="grid gap-2"><Label>Gotify Token</Label><Input type="password" :model-value="form.GOTIFY_TOKEN ?? ''" :placeholder="t('notifyPanel.secretKeepPlaceholder')" @update:model-value="(value) => updateSecretField('GOTIFY_TOKEN', String(value))" /></div>
+            <div class="grid gap-2"><Label>{{ t('notifyPanel.gotify.urlLabel') }}</Label><Input :model-value="form.GOTIFY_URL ?? ''" placeholder="https://gotify.example.com" @update:model-value="(value) => updateField('GOTIFY_URL', String(value))" /></div>
+            <div class="grid gap-2"><Label>{{ t('notifyPanel.gotify.tokenLabel') }}</Label><Input type="password" :model-value="form.GOTIFY_TOKEN ?? ''" :placeholder="t('notifyPanel.secretKeepPlaceholder')" @update:model-value="(value) => updateSecretField('GOTIFY_TOKEN', String(value))" /></div>
           </CardContent>
-          <div v-if="testResults.gotify" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('gotify')">{{ testResults.gotify.label }}：{{ testResults.gotify.message }}</div>
+          <div v-if="testResults.gotify" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('gotify')">{{ testResults.gotify.label }}{{ t('common.colon') }}{{ testResults.gotify.message }}</div>
           <CardFooter class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><Badge :variant="isChannelConfigured('gotify') ? 'default' : 'outline'">{{ resolveChannelBadge('gotify') }}</Badge><div class="flex flex-wrap gap-2"><Button variant="ghost" size="sm" :disabled="props.isSaving" @click="clearChannel('gotify')"><Trash2 class="h-4 w-4" />{{ t('notifyPanel.clear') }}</Button><Button variant="outline" size="sm" :disabled="props.isSaving || testingChannel !== null" @click="handleTest('gotify')"><TestTube2 class="h-4 w-4" />{{ testingChannel === 'gotify' ? t('common.testing') : t('notifyPanel.test') }}</Button></div></CardFooter>
         </Card>
       </div>
@@ -281,18 +281,18 @@ function resolveChannelBadge(channel: ChannelKey) {
         <Card class="app-surface-subtle overflow-hidden border-l-4 border-l-emerald-500">
           <CardHeader><CardTitle>{{ t('notifyPanel.wecom.title') }}</CardTitle><CardDescription>{{ t('notifyPanel.wecom.description') }}</CardDescription></CardHeader>
           <CardContent class="space-y-2"><Label>{{ t('notifyPanel.wecom.urlLabel') }}</Label><Input :model-value="form.WX_BOT_URL ?? ''" :placeholder="t('notifyPanel.secretPlaceholder')" @update:model-value="(value) => updateSecretField('WX_BOT_URL', String(value))" /><p class="text-xs text-slate-500">{{ secretConfigured.WX_BOT_URL ? t('notifyPanel.wecom.configuredHint') : t('notifyPanel.notConfigured') }}</p></CardContent>
-          <div v-if="testResults.wecom" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('wecom')">{{ testResults.wecom.label }}：{{ testResults.wecom.message }}</div>
+          <div v-if="testResults.wecom" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('wecom')">{{ testResults.wecom.label }}{{ t('common.colon') }}{{ testResults.wecom.message }}</div>
           <CardFooter class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><Badge :variant="isChannelConfigured('wecom') ? 'default' : 'outline'">{{ resolveChannelBadge('wecom') }}</Badge><div class="flex flex-wrap gap-2"><Button variant="ghost" size="sm" :disabled="props.isSaving" @click="clearChannel('wecom')"><Trash2 class="h-4 w-4" />{{ t('notifyPanel.clear') }}</Button><Button variant="outline" size="sm" :disabled="props.isSaving || testingChannel !== null" @click="handleTest('wecom')"><TestTube2 class="h-4 w-4" />{{ testingChannel === 'wecom' ? t('common.testing') : t('notifyPanel.test') }}</Button></div></CardFooter>
         </Card>
 
         <Card class="app-surface-subtle overflow-hidden border-l-4 border-l-cyan-500">
           <CardHeader><CardTitle>Telegram</CardTitle><CardDescription>{{ t('notifyPanel.telegram.description') }}</CardDescription></CardHeader>
           <CardContent class="grid gap-4 md:grid-cols-3">
-            <div class="grid gap-2"><Label>Bot Token</Label><Input type="password" :model-value="form.TELEGRAM_BOT_TOKEN ?? ''" :placeholder="t('notifyPanel.secretKeepPlaceholder')" @update:model-value="(value) => updateSecretField('TELEGRAM_BOT_TOKEN', String(value))" /></div>
-            <div class="grid gap-2"><Label>Chat ID</Label><Input :model-value="form.TELEGRAM_CHAT_ID ?? ''" :placeholder="t('notifyPanel.telegram.chatIdPlaceholder')" @update:model-value="(value) => updateField('TELEGRAM_CHAT_ID', String(value))" /></div>
+            <div class="grid gap-2"><Label>{{ t('notifyPanel.telegram.tokenLabel') }}</Label><Input type="password" :model-value="form.TELEGRAM_BOT_TOKEN ?? ''" :placeholder="t('notifyPanel.secretKeepPlaceholder')" @update:model-value="(value) => updateSecretField('TELEGRAM_BOT_TOKEN', String(value))" /></div>
+            <div class="grid gap-2"><Label>{{ t('notifyPanel.telegram.chatIdLabel') }}</Label><Input :model-value="form.TELEGRAM_CHAT_ID ?? ''" :placeholder="t('notifyPanel.telegram.chatIdPlaceholder')" @update:model-value="(value) => updateField('TELEGRAM_CHAT_ID', String(value))" /></div>
             <div class="grid gap-2"><Label>{{ t('notifyPanel.telegram.apiBaseUrl') }}</Label><Input :model-value="form.TELEGRAM_API_BASE_URL ?? ''" placeholder="https://api.telegram.org" @update:model-value="(value) => updateField('TELEGRAM_API_BASE_URL', String(value))" /></div>
           </CardContent>
-          <div v-if="testResults.telegram" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('telegram')">{{ testResults.telegram.label }}：{{ testResults.telegram.message }}</div>
+          <div v-if="testResults.telegram" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('telegram')">{{ testResults.telegram.label }}{{ t('common.colon') }}{{ testResults.telegram.message }}</div>
           <CardFooter class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><Badge :variant="isChannelConfigured('telegram') ? 'default' : 'outline'">{{ resolveChannelBadge('telegram') }}</Badge><div class="flex flex-wrap gap-2"><Button variant="ghost" size="sm" :disabled="props.isSaving" @click="clearChannel('telegram')"><Trash2 class="h-4 w-4" />{{ t('notifyPanel.clear') }}</Button><Button variant="outline" size="sm" :disabled="props.isSaving || testingChannel !== null" @click="handleTest('telegram')"><TestTube2 class="h-4 w-4" />{{ testingChannel === 'telegram' ? t('common.testing') : t('notifyPanel.test') }}</Button></div></CardFooter>
         </Card>
       </div>
@@ -317,7 +317,7 @@ function resolveChannelBadge(channel: ChannelKey) {
             <p class="mt-2 break-all font-mono text-xs text-rose-900">{{ webhookTemplateVariables }}</p>
           </div>
         </CardContent>
-        <div v-if="testResults.webhook" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('webhook')">{{ testResults.webhook.label }}：{{ testResults.webhook.message }}</div>
+        <div v-if="testResults.webhook" class="mx-6 mb-4 rounded-2xl border px-4 py-3 text-sm" :class="resultClass('webhook')">{{ testResults.webhook.label }}{{ t('common.colon') }}{{ testResults.webhook.message }}</div>
         <CardFooter class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><Badge :variant="isChannelConfigured('webhook') ? 'default' : 'outline'">{{ resolveChannelBadge('webhook') }}</Badge><div class="flex flex-wrap gap-2"><Button variant="ghost" size="sm" :disabled="props.isSaving" @click="clearChannel('webhook')"><Trash2 class="h-4 w-4" />{{ t('notifyPanel.clear') }}</Button><Button variant="outline" size="sm" :disabled="props.isSaving || testingChannel !== null" @click="handleTest('webhook')"><TestTube2 class="h-4 w-4" />{{ testingChannel === 'webhook' ? t('common.testing') : t('notifyPanel.test') }}</Button></div></CardFooter>
       </Card>
     </div>

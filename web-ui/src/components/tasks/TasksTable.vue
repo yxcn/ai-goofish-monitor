@@ -129,7 +129,7 @@ const emit = defineEmits<{
                   ]"
                 >
                   <component :is="isKeywordMode(task) ? Keyboard : BrainCircuit" class="mr-1 h-3 w-3" />
-                  {{ isKeywordMode(task) ? 'KEYWORD' : 'AI' }}
+                  {{ isKeywordMode(task) ? t('tasks.table.modeKeyword') : t('common.ai') }}
                 </Badge>
               </div>
 
@@ -165,7 +165,7 @@ const emit = defineEmits<{
                 {{ t('tasks.table.headers.crawl') }}
               </p>
               <p class="mt-2 text-sm font-bold text-slate-700">
-                ¥{{ task.min_price || 0 }} - {{ task.max_price || 'MAX' }}
+                ¥{{ task.min_price || 0 }} - {{ task.max_price || t('tasks.table.maxPrice') }}
               </p>
               <div class="mt-2 flex flex-wrap gap-1.5">
                 <Badge variant="outline" class="border-slate-200/70 bg-slate-50 text-slate-500">
@@ -226,11 +226,11 @@ const emit = defineEmits<{
               <div class="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
                 <span class="inline-flex items-center gap-1">
                   <Clock class="h-3.5 w-3.5" />
-                  {{ task.cron || 'MANUAL' }}
+                  {{ task.cron || t('tasks.table.manual') }}
                 </span>
                 <span class="inline-flex items-center gap-1">
                   <Layers class="h-3.5 w-3.5" />
-                  {{ task.max_pages || 3 }}P
+                  {{ t('tasks.table.pages', { count: task.max_pages || 3 }) }}
                 </span>
               </div>
             </div>
@@ -251,7 +251,7 @@ const emit = defineEmits<{
                 </div>
                 <div v-else class="flex flex-wrap items-center gap-2">
                   <div class="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-mono font-semibold text-emerald-700">
-                    {{ (task.ai_prompt_criteria_file || 'STANDARD').split('/').pop() }}
+                    {{ task.ai_prompt_criteria_file ? task.ai_prompt_criteria_file.split('/').pop() : t('tasks.table.standardCriteria') }}
                   </div>
                   <Button
                     size="sm"
@@ -366,7 +366,7 @@ const emit = defineEmits<{
                 <div class="flex items-center gap-1.5">
                   <div :class="[ 'w-1.5 h-1.5 rounded-full shadow-sm', task.is_running ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300' ]"></div>
                   <span :class="[ 'text-[9px] font-black tracking-widest uppercase', task.is_running ? 'text-emerald-600' : 'text-slate-400' ]">
-                    {{ task.is_running ? 'ACTIVE' : 'IDLE' }}
+                    {{ task.is_running ? t('common.running') : t('common.idle') }}
                   </span>
                 </div>
               </div>
@@ -385,7 +385,7 @@ const emit = defineEmits<{
                     ]"
                   >
                     <component :is="isKeywordMode(task) ? Keyboard : BrainCircuit" class="w-2.5 h-2.5 mr-1" />
-                    {{ isKeywordMode(task) ? 'KEYWORD' : 'AI ENGINE' }}
+                    {{ isKeywordMode(task) ? t('tasks.table.modeKeyword') : t('tasks.table.modeAiEngine') }}
                   </Badge>
                 </div>
                 
@@ -416,7 +416,7 @@ const emit = defineEmits<{
                 <div class="flex items-baseline gap-0.5">
                   <span class="text-[10px] font-bold text-slate-400 mr-1 italic">¥</span>
                   <span class="text-sm font-black text-slate-700 tracking-tighter">
-                    {{ task.min_price || 0 }} <span class="text-slate-300 font-normal mx-0.5">-</span> {{ task.max_price || 'MAX' }}
+                    {{ task.min_price || 0 }} <span class="text-slate-300 font-normal mx-0.5">-</span> {{ task.max_price || t('tasks.table.maxPrice') }}
                   </span>
                 </div>
                 <div class="flex flex-wrap gap-1.5">
@@ -466,14 +466,14 @@ const emit = defineEmits<{
               <div class="inline-flex flex-col items-center gap-2">
                 <div v-if="isKeywordMode(task)" class="bg-blue-50/30 p-2 rounded-xl border border-blue-100/50">
                   <div class="text-xs font-black text-blue-600">{{ t('tasks.table.keywordStrategies', { count: task.keyword_rules?.length || 0 }) }}</div>
-                  <div class="text-[9px] font-bold text-blue-400/70 uppercase mt-0.5 tracking-tighter">OR Logic</div>
+                  <div class="text-[9px] font-bold text-blue-400/70 uppercase mt-0.5 tracking-tighter">{{ t('tasks.table.orLogic') }}</div>
                 </div>
                 <div v-else class="flex flex-col items-center gap-1.5">
                   <div 
                     class="px-2 py-1 rounded bg-emerald-50/50 border border-emerald-100/50 text-[9px] font-mono font-black text-emerald-600 truncate max-w-[140px]"
                     :title="task.ai_prompt_criteria_file"
                   >
-                    {{ (task.ai_prompt_criteria_file || 'STANDARD').split('/').pop() }}
+                    {{ task.ai_prompt_criteria_file ? task.ai_prompt_criteria_file.split('/').pop() : t('tasks.table.standardCriteria') }}
                   </div>
                   <Button 
                     size="sm" 
@@ -494,7 +494,7 @@ const emit = defineEmits<{
               <div class="inline-flex flex-col items-center gap-1.5">
                 <div class="flex items-center gap-1.5 bg-slate-100/50 border border-slate-200/30 px-2 py-1 rounded-lg">
                   <Clock class="w-3 h-3 text-slate-400" />
-                  <span class="text-[11px] font-black text-slate-600 tracking-tight">{{ task.cron || 'MANUAL' }}</span>
+                  <span class="text-[11px] font-black text-slate-600 tracking-tight">{{ task.cron || t('tasks.table.manual') }}</span>
                 </div>
                 <div
                   class="px-2 py-1 rounded-md bg-amber-50/60 border border-amber-100/80 min-w-[112px]"
@@ -515,7 +515,7 @@ const emit = defineEmits<{
                   </div>
                 </div>
                 <div class="flex items-center gap-1 text-[9px] font-black text-slate-400 uppercase tracking-widest">
-                  <Layers class="w-3 h-3 opacity-50" /> {{ task.max_pages || 3 }}P
+                  <Layers class="w-3 h-3 opacity-50" /> {{ t('tasks.table.pages', { count: task.max_pages || 3 }) }}
                 </div>
               </div>
             </TableCell>

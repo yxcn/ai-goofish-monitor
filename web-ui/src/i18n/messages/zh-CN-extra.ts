@@ -161,6 +161,13 @@ const zhCNExtra = {
       start: '启动',
       stop: '停止',
       stopping: '停止中',
+      modeKeyword: '关键词',
+      modeAiEngine: 'AI 引擎',
+      maxPrice: '不限',
+      manual: '手动',
+      standardCriteria: '默认标准',
+      orLogic: '任一命中即推送',
+      pages: '{count} 页',
     },
   },
   rotation: {
@@ -250,17 +257,23 @@ const zhCNExtra = {
     notConfigured: '尚未配置。',
     ntfy: {
       description: '适合轻量推送，URL 非敏感，可直接回显和修改。',
+      urlLabel: 'Ntfy 主题地址',
     },
     bark: {
       description: 'URL 含设备 key，已改为不回显模式。',
       configuredHint: '已配置敏感值，当前页面不回显。',
+      urlLabel: 'Bark 推送地址',
     },
     gotify: {
       description: 'URL 与 Token 必须成对配置。',
+      urlLabel: 'Gotify 服务地址',
+      tokenLabel: 'Gotify 应用 Token',
     },
     pushplus: {
       description: '微信推送服务，支持公众号、企微、App 等多渠道。',
       topicPlaceholder: '群组编码，不填仅发送给自己',
+      tokenLabel: 'Token',
+      topicLabel: '群组编码 (Topic)',
     },
     wecom: {
       title: '企业微信机器人',
@@ -272,6 +285,8 @@ const zhCNExtra = {
       description: 'Bot Token 属于敏感字段，Chat ID 与反代地址可直接查看和修改。',
       chatIdPlaceholder: '例如：123456789',
       apiBaseUrl: 'API / 反代地址',
+      tokenLabel: 'Bot Token',
+      chatIdLabel: 'Chat ID',
     },
     webhook: {
       title: '通用 Webhook',

@@ -44,6 +44,7 @@ const zhCN = {
     keyword: '关键词',
     active: '已启用',
     inactive: '未启用',
+    colon: '：',
   },
   time: {
     justNow: '刚刚',
@@ -65,6 +66,10 @@ const zhCN = {
     openPrompts: '打开 Prompt 管理',
     searchUnavailable: '任务搜索仅在监控概览页可用...',
     accountManagement: '账号管理',
+    brand: '{highlight}智能监控',
+    brandHighlight: '闲鱼',
+    edition: '专业版',
+    defaultUser: '管理员',
   },
   sidebar: {
     dashboard: '监控概览',
@@ -201,11 +206,15 @@ const zhCN = {
       soldReference: '成交参考价',
       soldSamples: '近 {days} 天消失挂牌 {vanished} 条 · 卖家已售 {sold} 条',
       noSoldSamples: '暂无成交样本',
+      eyebrow: '市场情报',
+      trendReadingTitle: '趋势解读',
+      snapshotNote: '快照说明',
     },
     chart: {
       avgPrice: '均价',
       medianPrice: '中位数',
       noTrend: '暂无可绘制的趋势数据',
+      dailyCurve: '每日价格曲线',
     },
     card: {
       curated: '精选',
@@ -253,6 +262,8 @@ const zhCN = {
       expired: '已过期',
       block: '屏蔽',
       unblock: '取消屏蔽',
+      aiMatch: 'AI 匹配度',
+      analysisSkipped: '已跳过分析',
     },
   },
   logs: {
@@ -295,6 +306,10 @@ const zhCN = {
       saveFailed: 'AI 设置保存失败',
       testSuccess: 'AI 连接测试完成',
       testFailed: 'AI 连接测试失败',
+      baseUrl: 'API 地址',
+      apiKey: 'API Key',
+      skipAnalysis: '跳过 AI 分析',
+      skipAnalysisHint: '开启后所有抓到的商品不经 AI 判断，直接推送通知。',
     },
     rotation: { saved: '轮换设置已保存', saveFailed: '轮换设置保存失败' },
     status: {
@@ -309,6 +324,7 @@ const zhCN = {
       channels: '通知渠道',
       none: '无',
       fetching: '正在获取系统状态...',
+      openaiKey: 'OpenAI API Key',
     },
     prompts: {
       title: 'Prompt 管理',

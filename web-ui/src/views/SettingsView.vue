@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { Switch } from '@/components/ui/switch'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -204,11 +205,11 @@ watch(selectedPrompt, async (value) => {
           </CardHeader>
           <CardContent v-if="isReady" class="space-y-4">
             <div class="grid gap-2">
-              <Label>API Base URL</Label>
+              <Label>{{ t('settings.ai.baseUrl') }}</Label>
               <Input v-model="aiSettings.OPENAI_BASE_URL" placeholder="https://api.openai.com/v1" />
             </div>
             <div class="grid gap-2">
-              <Label>API Key</Label>
+              <Label>{{ t('settings.ai.apiKey') }}</Label>
               <Input
                 v-model="aiSettings.OPENAI_API_KEY"
                 type="password"
@@ -225,6 +226,17 @@ watch(selectedPrompt, async (value) => {
             <div class="grid gap-2">
               <Label>{{ t('settings.ai.proxy') }}</Label>
               <Input v-model="aiSettings.PROXY_URL" placeholder="http://127.0.0.1:7890" />
+            </div>
+            <div class="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+              <div class="space-y-1">
+                <Label for="skip-ai-analysis">{{ t('settings.ai.skipAnalysis') }}</Label>
+                <p class="text-xs text-gray-500">{{ t('settings.ai.skipAnalysisHint') }}</p>
+              </div>
+              <Switch
+                id="skip-ai-analysis"
+                :model-value="!!aiSettings.SKIP_AI_ANALYSIS"
+                @update:model-value="(value) => aiSettings.SKIP_AI_ANALYSIS = !!value"
+              />
             </div>
           </CardContent>
           <CardContent v-else class="py-8 text-sm text-gray-500">
@@ -295,7 +307,7 @@ watch(selectedPrompt, async (value) => {
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div class="p-3 border rounded-lg" :class="systemStatus.env_file.openai_api_key_set ? 'bg-green-50 border-green-200' : 'bg-yellow-50 border-yellow-200'">
                         <div class="flex justify-between items-center">
-                            <span class="font-medium text-sm">OpenAI API Key</span>
+                            <span class="font-medium text-sm">{{ t('settings.status.openaiKey') }}</span>
                             <span class="text-xs font-bold" :class="systemStatus.env_file.openai_api_key_set ? 'text-green-700' : 'text-yellow-700'">
                                 {{ systemStatus.env_file.openai_api_key_set ? t('common.active') : t('common.inactive') }}
                             </span>

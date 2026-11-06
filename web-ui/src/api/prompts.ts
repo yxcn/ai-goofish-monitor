@@ -10,11 +10,11 @@ export async function listPrompts(): Promise<string[]> {
 }
 
 export async function getPromptContent(filename: string): Promise<PromptContent> {
-  return await http(`/api/prompts/${filename}`)
+  return await http(`/api/prompts/${encodeURIComponent(filename)}`)
 }
 
 export async function updatePrompt(filename: string, content: string): Promise<{ message: string }> {
-  return await http(`/api/prompts/${filename}`, {
+  return await http(`/api/prompts/${encodeURIComponent(filename)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),

@@ -161,6 +161,13 @@ const enUSExtra = {
       start: 'Start',
       stop: 'Stop',
       stopping: 'Stopping...',
+      modeKeyword: 'KEYWORD',
+      modeAiEngine: 'AI ENGINE',
+      maxPrice: 'MAX',
+      manual: 'MANUAL',
+      standardCriteria: 'STANDARD',
+      orLogic: 'OR Logic',
+      pages: '{count}P',
     },
   },
   rotation: {
@@ -250,17 +257,23 @@ const enUSExtra = {
     notConfigured: 'Not configured yet.',
     ntfy: {
       description: 'Best for lightweight delivery. The topic URL is not sensitive and can be displayed directly.',
+      urlLabel: 'Ntfy Topic URL',
     },
     bark: {
       description: 'The URL contains a device key and is intentionally hidden.',
       configuredHint: 'A sensitive value is configured and hidden on this page.',
+      urlLabel: 'Bark URL',
     },
     gotify: {
       description: 'URL and token must be configured together.',
+      urlLabel: 'Gotify URL',
+      tokenLabel: 'Gotify Token',
     },
     pushplus: {
       description: 'WeChat push service supporting official account, WeCom, App, and more.',
       topicPlaceholder: 'Group code; leave empty to send to yourself only',
+      tokenLabel: 'Token',
+      topicLabel: 'Topic',
     },
     wecom: {
       title: 'WeCom Bot',
@@ -272,6 +285,8 @@ const enUSExtra = {
       description: 'The bot token is sensitive, while Chat ID and API base URL can be viewed and updated directly.',
       chatIdPlaceholder: 'Example: 123456789',
       apiBaseUrl: 'API / Proxy Base URL',
+      tokenLabel: 'Bot Token',
+      chatIdLabel: 'Chat ID',
     },
     webhook: {
       title: 'Generic Webhook',

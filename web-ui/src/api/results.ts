@@ -18,26 +18,26 @@ export async function getResultFiles(): Promise<string[]> {
 }
 
 export async function deleteResultFile(filename: string): Promise<{ message: string }> {
-  return await http(`/api/results/files/${filename}`, { method: 'DELETE' })
+  return await http(`/api/results/files/${encodeURIComponent(filename)}`, { method: 'DELETE' })
 }
 
 export async function getResultContent(
   filename: string,
   params: GetResultContentParams = {}
 ): Promise<{ total_items: number; items: ResultItem[] }> {
-  return await http(`/api/results/${filename}`, { params: params as Record<string, any> })
+  return await http(`/api/results/${encodeURIComponent(filename)}`, { params: params as Record<string, any> })
 }
 
 export async function getResultInsights(filename: string): Promise<ResultInsights> {
-  return await http(`/api/results/${filename}/insights`)
+  return await http(`/api/results/${encodeURIComponent(filename)}/insights`)
 }
 
 export async function getResultBlacklistRules(filename: string): Promise<{ keywords: string[] }> {
-  return await http(`/api/results/${filename}/blacklist-rules`)
+  return await http(`/api/results/${encodeURIComponent(filename)}/blacklist-rules`)
 }
 
 export async function updateResultBlacklistRules(filename: string, keywords: string[]): Promise<{ message: string; keywords: string[] }> {
-  return await http(`/api/results/${filename}/blacklist-rules`, {
+  return await http(`/api/results/${encodeURIComponent(filename)}/blacklist-rules`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ keywords }),
@@ -66,7 +66,7 @@ export function downloadResultExport(filename: string, params: GetResultContentP
 }
 
 export async function updateItemStatus(filename: string, itemId: string, status: string): Promise<{ message: string; status: string }> {
-  return await http(`/api/results/${filename}/items/${itemId}/status`, {
+  return await http(`/api/results/${encodeURIComponent(filename)}/items/${encodeURIComponent(itemId)}/status`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),

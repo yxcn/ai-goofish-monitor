@@ -23,55 +23,59 @@ const emit = defineEmits<{
 }>()
 const { t } = useI18n()
 
-const info = props.item.商品信息
-const seller = props.item.卖家信息
-const ai = props.item.ai_analysis
-const priceInsight = props.item.price_insight
+// computed 而不是解构常量：屏蔽/取消屏蔽后列表以同一商品 ID 复用组件实例，props.item 会换成新对象
+const info = computed(() => props.item.商品信息)
+const seller = computed(() => props.item.卖家信息)
+const ai = computed(() => props.item.ai_analysis)
+const priceInsight = computed(() => props.item.price_insight)
 
-const isRecommended = ai?.is_recommended === true
+// SKIP_AI_ANALYSIS 模式：is_recommended 仍为 true 但 analysis_source 为 'skipped'，不算 AI 推荐（不打精选、不显示匹配度）
+const isSkipped = computed(() => ai.value?.analysis_source === 'skipped')
+const isRecommended = computed(() => ai.value?.is_recommended === true && !isSkipped.value)
 // 和通知消息同一套规则：reason 以“有条件推荐”开头的推荐单独标注
-const isConditional = computed(() => typeof ai?.reason === 'string' && ai.reason.trimStart().startsWith('有条件推荐'))
+const isConditional = computed(() => typeof ai.value?.reason === 'string' && ai.value.reason.trimStart().startsWith('有条件推荐'))
 const recommendationStatus = computed(() => {
-  if (ai?.is_recommended === true && isConditional.value) return { label: t('results.card.conditionalRecommend'), color: 'bg-amber-500', icon: CheckCircle2, text: 'text-amber-700', bg: 'bg-amber-50' }
-  if (ai?.is_recommended === true) return { label: t('results.card.strongRecommend'), color: 'bg-emerald-500', icon: CheckCircle2, text: 'text-emerald-600', bg: 'bg-emerald-50' }
-  if (ai?.is_recommended === false) return { label: t('results.card.notRecommended'), color: 'bg-rose-500', icon: XCircle, text: 'text-rose-600', bg: 'bg-rose-50' }
+  if (isSkipped.value) return { label: t('results.card.analysisSkipped'), color: 'bg-slate-400', icon: Info, text: 'text-slate-600', bg: 'bg-slate-50' }
+  if (ai.value?.is_recommended === true && isConditional.value) return { label: t('results.card.conditionalRecommend'), color: 'bg-amber-500', icon: CheckCircle2, text: 'text-amber-700', bg: 'bg-amber-50' }
+  if (ai.value?.is_recommended === true) return { label: t('results.card.strongRecommend'), color: 'bg-emerald-500', icon: CheckCircle2, text: 'text-emerald-600', bg: 'bg-emerald-50' }
+  if (ai.value?.is_recommended === false) return { label: t('results.card.notRecommended'), color: 'bg-rose-500', icon: XCircle, text: 'text-rose-600', bg: 'bg-rose-50' }
   return { label: t('results.card.pending'), color: 'bg-amber-500', icon: AlertCircle, text: 'text-amber-600', bg: 'bg-amber-50' }
 })
 
-const imageUrl = info.商品图片列表?.[0] || info.商品主图链接 || ''
-const crawlTime = props.item.爬取时间
+const imageUrl = computed(() => info.value.商品图片列表?.[0] || info.value.商品主图链接 || '')
+const crawlTime = computed(() => (props.item.爬取时间
   ? formatDateTime(props.item.爬取时间, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-  : t('common.unknown')
-const matchScore = ai?.value_score ?? 0
+  : t('common.unknown')))
+const matchScore = computed(() => ai.value?.value_score ?? 0)
 // 商品页上的那几项：标签（包邮/验货宝）、想要、浏览、收藏、发货地、发布时间；占位符（NaN、-）不显示
-const listingTags = computed(() => Array.from(new Set((info.商品标签 ?? []).map((tag) => String(tag ?? '').trim()).filter(Boolean))))
+const listingTags = computed(() => Array.from(new Set((info.value.商品标签 ?? []).map((tag) => String(tag ?? '').trim()).filter(Boolean))))
 const toCount = (value: unknown): number | null => {
   if (value === null || value === undefined || value === '') return null
   const parsed = Number(String(value).trim())
   return Number.isFinite(parsed) ? Math.round(parsed) : null
 }
-const wantsCount = computed(() => toCount(info['“想要”人数']))
-const viewCount = computed(() => toCount(info.浏览量))
-const favoriteCount = computed(() => toCount(info.收藏数))
+const wantsCount = computed(() => toCount(info.value['“想要”人数']))
+const viewCount = computed(() => toCount(info.value.浏览量))
+const favoriteCount = computed(() => toCount(info.value.收藏数))
 const publishTime = computed(() => {
-  const raw = String(info.发布时间 ?? '').trim()
+  const raw = String(info.value.发布时间 ?? '').trim()
   if (!raw || raw === '未知时间') return ''
   return raw.replace(/^\d{4}-/, '')
 })
 // 发货地区是省份，详情页还给了卖家城市；两者都有且不重复时合成“山东 淄博”
 const region = computed(() => {
-  const rawProvince = String(info.发货地区 ?? '').trim()
+  const rawProvince = String(info.value.发货地区 ?? '').trim()
   const province = rawProvince && rawProvince !== '地区未知' ? rawProvince : ''
-  const city = String(info.卖家所在城市 ?? '').trim()
+  const city = String(info.value.卖家所在城市 ?? '').trim()
   if (province && city && !province.includes(city) && !city.includes(province)) return `${province} ${city}`
   return city || province
 })
 // 卖家活跃度：最近活跃（“21分钟前来过”）、24 小时回复率、平均回复时长
 const sellerFacts = computed(() => {
   const parts: string[] = []
-  const lastActive = String(info.卖家最近活跃 ?? '').trim()
-  const replyRate = String(info.卖家24小时回复率 ?? '').trim()
-  const replyInterval = String(info.卖家平均回复时长 ?? '').trim()
+  const lastActive = String(info.value.卖家最近活跃 ?? '').trim()
+  const replyRate = String(info.value.卖家24小时回复率 ?? '').trim()
+  const replyInterval = String(info.value.卖家平均回复时长 ?? '').trim()
   if (lastActive) parts.push(lastActive)
   if (replyRate) parts.push(t('results.card.replyRate', { rate: replyRate }))
   if (replyInterval) parts.push(t('results.card.replyIn', { time: replyInterval }))
@@ -79,10 +83,10 @@ const sellerFacts = computed(() => {
 })
 // 划线原价：占位符（暂无）或和现价相同时不显示
 const originalPrice = computed(() => {
-  const raw = String(info.商品原价 ?? '').trim()
+  const raw = String(info.value.商品原价 ?? '').trim()
   if (!raw || ['暂无', '-', 'N/A'].includes(raw)) return ''
   const digits = (text: string) => text.replace(/[^\d.]/g, '')
-  return digits(raw) && digits(raw) === digits(String(info.当前售价 ?? '')) ? '' : raw
+  return digits(raw) && digits(raw) === digits(String(info.value.当前售价 ?? '')) ? '' : raw
 })
 const hasListingFacts = computed(() => listingTags.value.length > 0 || wantsCount.value !== null || viewCount.value !== null || favoriteCount.value !== null || !!publishTime.value || !!region.value)
 const isHidden = computed(() => props.item._effective_hidden === true || props.item._status === 'hidden')
@@ -97,17 +101,18 @@ const hiddenLabel = computed(() => {
 const expanded = ref(false)
 
 // 卖家画像：程序按固定规则算出的摘要；结论和信号常驻，其余几行展开看
-const profile = props.item.卖家画像 && typeof props.item.卖家画像 === 'object' ? props.item.卖家画像 : null
+const profile = computed(() => (props.item.卖家画像 && typeof props.item.卖家画像 === 'object' ? props.item.卖家画像 : null))
 const profileExpanded = ref(false)
-const profileSignals = computed(() => (profile?.信号 ?? []).map((s) => String(s ?? '').trim()).filter(Boolean))
+const profileSignals = computed(() => (profile.value?.信号 ?? []).map((s) => String(s ?? '').trim()).filter(Boolean))
 const profileRows = computed(() => {
-  if (!profile) return []
+  const current = profile.value
+  if (!current) return []
   const rows: Array<{ key: string; label: string; value: string }> = [
-    { key: 'identity', label: t('results.card.profileIdentity'), value: String(profile.身份 ?? '') },
-    { key: 'activity', label: t('results.card.profileActivity'), value: String(profile.活跃 ?? '') },
-    { key: 'trades', label: t('results.card.profileTrades'), value: String(profile.交易 ?? '') },
-    { key: 'history', label: t('results.card.profileHistory'), value: String(profile.历史 ?? '') },
-    { key: 'reputation', label: t('results.card.profileReputation'), value: String(profile.口碑 ?? '') },
+    { key: 'identity', label: t('results.card.profileIdentity'), value: String(current.身份 ?? '') },
+    { key: 'activity', label: t('results.card.profileActivity'), value: String(current.活跃 ?? '') },
+    { key: 'trades', label: t('results.card.profileTrades'), value: String(current.交易 ?? '') },
+    { key: 'history', label: t('results.card.profileHistory'), value: String(current.历史 ?? '') },
+    { key: 'reputation', label: t('results.card.profileReputation'), value: String(current.口碑 ?? '') },
   ]
   return rows.filter((row) => row.value && row.value !== '暂无')
 })
@@ -116,10 +121,10 @@ const isWarningSignal = (signal: string) => signal.startsWith('⚠️')
 // 贵贱判断：后端先比成交参考价，样本不足再比挂牌中位价；都不够就不下结论
 const fmtPrice = (value: number | null | undefined) => (value === null || value === undefined ? '—' : `¥${Math.round(value)}`)
 const priceVerdict = computed(() => {
-  const key = priceInsight?.price_verdict_key
+  const key = priceInsight.value?.price_verdict_key
   if (!key || key === 'insufficient') return null
-  const basis = priceInsight?.price_verdict_basis === 'sold' ? t('results.card.basisSold') : t('results.card.basisListing')
-  const pct = priceInsight?.price_diff_percent ?? 0
+  const basis = priceInsight.value?.price_verdict_basis === 'sold' ? t('results.card.basisSold') : t('results.card.basisListing')
+  const pct = priceInsight.value?.price_diff_percent ?? 0
   const detail = Math.abs(pct) < 1
     ? t('results.card.vsReferenceEqual', { basis })
     : t(pct < 0 ? 'results.card.vsReferenceBelow' : 'results.card.vsReferenceAbove', { basis, pct: Math.abs(Math.round(pct)) })
@@ -130,7 +135,7 @@ const priceVerdict = computed(() => {
       : 'border-slate-200 bg-slate-50 text-slate-600'
   return { label: t(`results.card.verdict.${key}`), detail, style }
 })
-const soldReference = computed(() => priceInsight?.sold_reference ?? null)
+const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
 </script>
 
 <template>
@@ -215,13 +220,13 @@ const soldReference = computed(() => priceInsight?.sold_reference ?? null)
             <component :is="recommendationStatus.icon" class="w-4 h-4" :class="recommendationStatus.text" />
             <span class="text-sm font-bold" :class="recommendationStatus.text">{{ recommendationStatus.label }}</span>
           </div>
-          <div class="flex items-center gap-1">
-             <span class="text-[10px] font-medium uppercase tracking-wider text-slate-400">AI Match</span>
+          <div v-if="!isSkipped" class="flex items-center gap-1">
+             <span class="text-[10px] font-medium uppercase tracking-wider text-slate-400">{{ t('results.card.aiMatch') }}</span>
              <span class="text-sm font-black" :class="recommendationStatus.text">{{ matchScore }}%</span>
           </div>
         </div>
         
-        <div class="w-full h-1.5 bg-white/50 rounded-full overflow-hidden mb-3">
+        <div v-if="!isSkipped" class="w-full h-1.5 bg-white/50 rounded-full overflow-hidden mb-3">
           <div 
             class="h-full transition-all duration-1000 ease-out rounded-full" 
             :class="recommendationStatus.color"

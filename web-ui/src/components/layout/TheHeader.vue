@@ -14,11 +14,13 @@ import {
 } from 'lucide-vue-next'
 import Badge from '@/components/ui/badge/Badge.vue'
 import { useMobileNav } from '@/composables/useMobileNav'
-import { useI18n } from 'vue-i18n'
+import { useAuth } from '@/composables/useAuth'
+import { I18nT, useI18n } from 'vue-i18n'
 
 const router = useRouter()
 const route = useRoute()
 const { toggleMobileNav } = useMobileNav()
+const { username } = useAuth()
 const inactiveSearchValue = ref('')
 const { t } = useI18n()
 
@@ -48,11 +50,13 @@ function goPrompts() {
       <div class="w-8 h-8 rounded-lg bg-primary flex items-center justify-center shadow-lg shadow-primary/20 transition-transform group-hover:rotate-12">
         <Zap class="w-5 h-5 text-white fill-white" />
       </div>
-      <h1 class="text-lg font-black text-slate-800 tracking-tighter">
-        AI <span class="text-primary">Xianyu</span> Hunter
-      </h1>
+      <I18nT keypath="header.brand" tag="h1" scope="global" class="text-lg font-black text-slate-800 tracking-tighter">
+        <template #highlight>
+          <span class="text-primary">{{ t('header.brandHighlight') }}</span>
+        </template>
+      </I18nT>
       <Badge variant="outline" class="ml-2 text-[10px] font-bold border-primary/20 text-primary bg-primary/5 uppercase tracking-widest hidden sm:flex">
-        PRO
+        {{ t('header.edition') }}
       </Badge>
     </RouterLink>
 
@@ -114,7 +118,7 @@ function goPrompts() {
            <UserCircle class="w-6 h-6 text-slate-500" />
         </div>
         <div class="text-left hidden lg:block">
-           <p class="text-xs font-black text-slate-700 leading-none mb-0.5">Xianyu Admin</p>
+           <p class="text-xs font-black text-slate-700 leading-none mb-0.5">{{ username || t('header.defaultUser') }}</p>
            <p class="text-[10px] text-slate-400 font-medium">{{ t('header.accountManagement') }}</p>
         </div>
       </Button>

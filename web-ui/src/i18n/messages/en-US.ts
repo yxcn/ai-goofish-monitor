@@ -44,6 +44,7 @@ const enUS = {
     keyword: 'Keyword',
     active: 'Active',
     inactive: 'Inactive',
+    colon: ': ',
   },
   time: {
     justNow: 'Just now',
@@ -65,6 +66,10 @@ const enUS = {
     openPrompts: 'Open prompt manager',
     searchUnavailable: 'Task search is only available on the dashboard...',
     accountManagement: 'Account Management',
+    brand: 'AI {highlight} Hunter',
+    brandHighlight: 'Xianyu',
+    edition: 'PRO',
+    defaultUser: 'Admin',
   },
   sidebar: {
     dashboard: 'Dashboard',
@@ -201,11 +206,15 @@ const enUS = {
       soldReference: 'Sold Reference',
       soldSamples: '{vanished} delisted in {days}d · {sold} sold by sellers',
       noSoldSamples: 'No sold samples yet',
+      eyebrow: 'Market Intelligence',
+      trendReadingTitle: 'Trend Reading',
+      snapshotNote: 'Snapshot Note',
     },
     chart: {
       avgPrice: 'Average',
       medianPrice: 'Median',
       noTrend: 'No trend data to render yet',
+      dailyCurve: 'Daily Price Curve',
     },
     card: {
       curated: 'Curated',
@@ -253,6 +262,8 @@ const enUS = {
       expired: 'Expired',
       block: 'Block',
       unblock: 'Unblock',
+      aiMatch: 'AI Match',
+      analysisSkipped: 'Analysis skipped',
     },
   },
   logs: {
@@ -295,6 +306,10 @@ const enUS = {
       saveFailed: 'Failed to save AI settings.',
       testSuccess: 'AI connection test completed.',
       testFailed: 'AI connection test failed.',
+      baseUrl: 'API Base URL',
+      apiKey: 'API Key',
+      skipAnalysis: 'Skip AI analysis',
+      skipAnalysisHint: 'When enabled, every scraped item is pushed directly without AI review.',
     },
     rotation: { saved: 'Rotation settings saved.', saveFailed: 'Failed to save rotation settings.' },
     status: {
@@ -309,6 +324,7 @@ const enUS = {
       channels: 'Notification Channels',
       none: 'None',
       fetching: 'Loading system status...',
+      openaiKey: 'OpenAI API Key',
     },
     prompts: {
       title: 'Prompt Management',
