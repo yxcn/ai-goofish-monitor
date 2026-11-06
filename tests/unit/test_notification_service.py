@@ -142,6 +142,16 @@ def _recommended_product():
         "商品链接": "https://www.goofish.com/item/123",
         "ai_analysis": {
             "is_recommended": True,
+            "reason": "有条件推荐：配置和价格符合要求",
+            "value_score": "58",
+            "value_summary": "1494元比当前搜索样本均价低约7%",
+            "criteria_analysis": {
+                "price": {"status": "PASS"},
+                "memory": {"status": "pass"},
+                "battery_health": {"status": "NEEDS_MANUAL_CHECK"},
+                "seller_type": {"status": "PASS", "analysis_details": {}},
+                "note": "not a criterion",
+            },
             "risk_tags": [
                 "需确认：电池健康度和循环次数",
                 "需确认: 维修、拆换件及进水历史",
@@ -161,9 +171,16 @@ def test_build_message_splits_risk_tags_into_checklist_and_notes():
 
     assert message.confirm_items == ("电池健康度和循环次数", "维修、拆换件及进水历史")
     assert message.risk_notes == ("图片显示为T14s，并非标题所写T14",)
+    assert message.verdict == "有条件推荐"
+    assert message.match_score == 58
+    assert message.criteria_summary == "3 项通过，1 项待确认"
+    assert message.notification_title == "🚨 有条件推荐! ThinkPad <T14> & 配件"
     assert message.content == (
+        "结论: 有条件推荐（AI 匹配度 58%）\n"
+        "标准: 3 项通过，1 项待确认\n"
         "价格: 1850\n"
         "原因: 有条件推荐：配置和价格符合要求\n"
+        "性价比: 1494元比当前搜索样本均价低约7%\n"
         "注意: 图片显示为T14s，并非标题所写T14\n"
         "聊卖家前需确认:\n"
         "1. 电池健康度和循环次数\n"
@@ -175,7 +192,39 @@ def test_build_message_splits_risk_tags_into_checklist_and_notes():
 def test_build_message_without_analysis_keeps_the_old_layout():
     message = _OkClient(enabled=True, pcurl_to_mobile=False)._build_message(_product(), "价格合适")
     assert message.confirm_items == () and message.risk_notes == ()
+    assert message.verdict is None and message.match_score is None and message.criteria_summary is None
+    assert message.notification_title == "🚨 新推荐! Sony A7M4"
     assert message.content == "价格: 9999\n原因: 价格合适\n链接: https://www.goofish.com/item/123"
+
+
+def test_verdict_follows_the_result_card_rules():
+    from src.infrastructure.external.notification_clients.base import (
+        match_score,
+        recommendation_verdict,
+        summarize_criteria,
+    )
+
+    assert recommendation_verdict({"is_recommended": True, "reason": "配置很好"}) == "强烈推荐"
+    assert recommendation_verdict({"is_recommended": True, "reason": "  有条件推荐，需确认电池"}) == "有条件推荐"
+    assert recommendation_verdict({"is_recommended": False, "reason": "有条件推荐"}) == "不建议购买"
+    assert recommendation_verdict({"reason": "还没分析"}) is None
+    assert recommendation_verdict(None) is None
+
+    assert match_score({"value_score": 82.6}) == 83
+    assert match_score({"value_score": "120"}) == 100
+    assert match_score({"value_score": "high"}) is None
+    assert match_score({"value_score": True}) is None
+    assert match_score({}) is None
+
+    assert summarize_criteria({"criteria_analysis": {"a": {"status": "FAIL"}, "b": {"status": "needs_manual_check"}}}) == (0, 1, 1)
+    assert summarize_criteria({}) == (0, 0, 0)
+
+
+def test_strong_recommendation_title_and_content():
+    product = {**_product(), "ai_analysis": {"is_recommended": True, "reason": "配置很好", "value_score": 90}}
+    message = _OkClient(enabled=True, pcurl_to_mobile=False)._build_message(product, "配置很好")
+    assert message.notification_title == "🚨 强烈推荐! Sony A7M4"
+    assert message.content.startswith("结论: 强烈推荐（AI 匹配度 90%）\n价格: 9999\n原因: 配置很好\n")
 
 
 def test_telegram_client_renders_checklist_and_escapes_html(monkeypatch):
@@ -205,7 +254,8 @@ def test_telegram_client_renders_checklist_and_escapes_html(monkeypatch):
     assert captured["json"]["parse_mode"] == "HTML"
     text = captured["json"]["text"]
     assert "<b>ThinkPad &lt;T14&gt; &amp; 配件</b>" in text
-    assert "📝 原因: 有条件推荐：&lt;配置&gt;符合" in text
+    assert "⭐ 结论: <b>有条件推荐</b> · AI 匹配度 58%\n📋 标准: 3 项通过，1 项待确认\n💰 价格: 1850" in text
+    assert "📝 原因: 有条件推荐：&lt;配置&gt;符合\n💹 性价比: 1494元比当前搜索样本均价低约7%" in text
     assert "⚠️ 注意:\n• 图片显示为T14s，并非标题所写T14" in text
     assert "❓ 聊卖家前需确认:\n1. 电池健康度和循环次数\n2. 维修、拆换件及进水历史" in text
     assert text.endswith("💻 <a href='https://www.goofish.com/item/123'>电脑端链接</a>")
@@ -226,3 +276,20 @@ def test_telegram_client_raises_on_api_error(monkeypatch):
 
     with pytest.raises(RuntimeError, match="chat not found"):
         asyncio.run(client.send(_product(), "价格合适"))
+
+
+def test_telegram_client_redacts_bot_token_from_network_errors(monkeypatch):
+    import requests
+
+    from src.infrastructure.external.notification_clients.telegram_client import TelegramClient
+
+    def _boom(url, **kwargs):
+        raise requests.ConnectionError(f"Max retries exceeded with url: {url}")
+
+    monkeypatch.setattr("requests.post", _boom)
+    client = TelegramClient("123:secret-token", "4567", pcurl_to_mobile=False)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        asyncio.run(client.send(_product(), "价格合适"))
+    assert "secret-token" not in str(excinfo.value)
+    assert "/bot***/sendMessage" in str(excinfo.value)

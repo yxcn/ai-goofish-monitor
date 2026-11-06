@@ -201,6 +201,7 @@ const enUS = {
     card: {
       curated: 'Curated',
       strongRecommend: 'Strong Buy',
+      conditionalRecommend: 'Conditional Buy',
       notRecommended: 'Skip',
       pending: 'Watch',
       analyzing: 'AI is still analyzing the potential value of this item...',

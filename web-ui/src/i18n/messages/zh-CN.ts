@@ -201,6 +201,7 @@ const zhCN = {
     card: {
       curated: '精选',
       strongRecommend: '强烈推荐',
+      conditionalRecommend: '有条件推荐',
       notRecommended: '不建议购买',
       pending: '待观察',
       analyzing: 'AI 正在分析该商品的潜在价值...',

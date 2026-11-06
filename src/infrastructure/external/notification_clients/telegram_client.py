@@ -48,19 +48,26 @@ class TelegramClient(NotificationClient):
 
         headers = {"Content-Type": "application/json"}
         loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: requests.post(
-                telegram_api_url,
-                json=telegram_payload,
-                headers=headers,
-                timeout=10
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(
+                    telegram_api_url,
+                    json=telegram_payload,
+                    headers=headers,
+                    timeout=10
+                )
             )
-        )
-        response.raise_for_status()
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            # requests 的报错会带上完整 URL，里面有 bot token，不能原样进日志和界面
+            raise RuntimeError(self._redact_token(str(exc))) from None
         result = response.json()
         if not result.get("ok"):
             raise RuntimeError(result.get("description", "Telegram 返回未知错误"))
+
+    def _redact_token(self, text: str) -> str:
+        return text.replace(self.bot_token, "***") if self.bot_token else text
 
     @staticmethod
     def _render_text(message) -> str:
@@ -71,9 +78,18 @@ class TelegramClient(NotificationClient):
             "",
             f"<b>{escape(short_title)}</b>",
             "",
-            f"💰 价格: {escape(str(message.price))}",
-            f"📝 原因: {escape(message.reason)}",
         ]
+        if message.verdict:
+            verdict_line = f"⭐ 结论: <b>{escape(message.verdict)}</b>"
+            if message.match_score is not None:
+                verdict_line += f" · AI 匹配度 {message.match_score}%"
+            lines.append(verdict_line)
+        if message.criteria_summary:
+            lines.append(f"📋 标准: {escape(message.criteria_summary)}")
+        lines.append(f"💰 价格: {escape(str(message.price))}")
+        lines.append(f"📝 原因: {escape(message.reason)}")
+        if message.value_summary:
+            lines.append(f"💹 性价比: {escape(message.value_summary)}")
         if message.risk_notes:
             lines.append("⚠️ 注意:")
             lines.extend(f"• {escape(note)}" for note in message.risk_notes)

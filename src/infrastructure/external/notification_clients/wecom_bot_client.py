@@ -25,8 +25,15 @@ class WeComBotClient(NotificationClient):
 
         message = self._build_message(product_data, reason)
         markdown_lines = [f"## {message.notification_title}", ""]
+        if message.verdict:
+            score = f"（AI 匹配度 {message.match_score}%）" if message.match_score is not None else ""
+            markdown_lines.append(f"- 结论: **{message.verdict}**{score}")
+        if message.criteria_summary:
+            markdown_lines.append(f"- 标准: {message.criteria_summary}")
         markdown_lines.append(f"- 价格: {message.price}")
         markdown_lines.append(f"- 原因: {message.reason}")
+        if message.value_summary:
+            markdown_lines.append(f"- 性价比: {message.value_summary}")
         if message.risk_notes:
             markdown_lines.append("- 注意: " + "；".join(message.risk_notes))
         if message.confirm_items:

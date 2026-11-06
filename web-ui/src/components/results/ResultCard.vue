@@ -29,7 +29,10 @@ const ai = props.item.ai_analysis
 const priceInsight = props.item.price_insight
 
 const isRecommended = ai?.is_recommended === true
+// 和通知消息同一套规则：reason 以“有条件推荐”开头的推荐单独标注
+const isConditional = computed(() => typeof ai?.reason === 'string' && ai.reason.trimStart().startsWith('有条件推荐'))
 const recommendationStatus = computed(() => {
+  if (ai?.is_recommended === true && isConditional.value) return { label: t('results.card.conditionalRecommend'), color: 'bg-amber-500', icon: CheckCircle2, text: 'text-amber-700', bg: 'bg-amber-50' }
   if (ai?.is_recommended === true) return { label: t('results.card.strongRecommend'), color: 'bg-emerald-500', icon: CheckCircle2, text: 'text-emerald-600', bg: 'bg-emerald-50' }
   if (ai?.is_recommended === false) return { label: t('results.card.notRecommended'), color: 'bg-rose-500', icon: XCircle, text: 'text-rose-600', bg: 'bg-rose-50' }
   return { label: t('results.card.pending'), color: 'bg-amber-500', icon: AlertCircle, text: 'text-amber-600', bg: 'bg-amber-50' }
