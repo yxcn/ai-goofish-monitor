@@ -205,7 +205,9 @@ class ItemAnalysisDispatcher:
     async def _notify_if_recommended(self, item_data: dict, analysis_result: dict) -> None:
         if not analysis_result.get("is_recommended"):
             return
+        # 通知层只拿到商品信息，把分析结果一起带上，risk_tags 才能变成消息里的需确认清单
+        notify_data = {**item_data, "ai_analysis": analysis_result}
         try:
-            await self._notifier(item_data, analysis_result.get("reason", "无"))
+            await self._notifier(notify_data, analysis_result.get("reason", "无"))
         except Exception as exc:
             print(f"   [通知] 发送推荐通知失败: {exc}")

@@ -94,3 +94,60 @@ def test_no_rules_keeps_the_old_flow():
     items = [{"商品ID": "x", "商品图片列表": [], "商品属性": {"分类": "手机"}}]
     _, ai_calls, _ = _run(items, ())
     assert ai_calls == ["x"]
+
+
+def test_recommended_items_are_notified_with_their_analysis_attached():
+    notified = []
+
+    async def seller_loader(user_id: str):
+        return {}
+
+    async def image_downloader(product_id, image_urls, task_name):
+        return []
+
+    async def ai_analyzer(record, image_paths, prompt_text):
+        return {
+            "is_recommended": True,
+            "reason": "有条件推荐：配置合适",
+            "risk_tags": ["需确认：电池健康度"],
+        }
+
+    async def notifier(item_data, reason):
+        notified.append((item_data, reason))
+
+    async def saver(record, keyword):
+        return True
+
+    async def go():
+        dispatcher = ItemAnalysisDispatcher(
+            concurrency=1,
+            skip_ai_analysis=False,
+            seller_loader=seller_loader,
+            image_downloader=image_downloader,
+            ai_analyzer=ai_analyzer,
+            notifier=notifier,
+            saver=saver,
+        )
+        dispatcher.submit(
+            ItemAnalysisJob(
+                keyword="ThinkPad T14",
+                task_name="T14",
+                decision_mode="ai",
+                analyze_images=False,
+                prompt_text="prompt",
+                keyword_rules=(),
+                final_record={"商品信息": {"商品ID": "ok", "商品标题": "T14", "商品图片列表": []}, "卖家信息": {}},
+                seller_id=None,
+                zhima_credit_text="暂无",
+                registration_duration_text="来闲鱼1年",
+            )
+        )
+        await dispatcher.join()
+
+    asyncio.run(go())
+
+    assert len(notified) == 1
+    item_data, reason = notified[0]
+    assert reason == "有条件推荐：配置合适"
+    assert item_data["商品标题"] == "T14"
+    assert item_data["ai_analysis"]["risk_tags"] == ["需确认：电池健康度"]
