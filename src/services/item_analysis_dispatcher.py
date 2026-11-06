@@ -11,7 +11,7 @@ from typing import Awaitable, Callable, Optional
 
 from src.attribute_rules import evaluate_attribute_rules, parse_attribute_rules
 from src.keyword_rule_engine import build_search_text, evaluate_keyword_rules
-from src.seller_profile import build_seller_profile
+from src.seller_profile import build_seller_profile, profile_facts
 
 # 属性硬规则挡掉的商品，analysis_source 用这个值，结果页能和 AI / 关键词结论区分开
 ATTRIBUTE_RULE_SOURCE = "attribute_rule"
@@ -180,7 +180,9 @@ class ItemAnalysisDispatcher:
             image_paths = await self._download_images(job, record)
             if not job.prompt_text:
                 return self._build_ai_error_result("任务未配置AI prompt，跳过分析。")
-            ai_result = await self._ai_analyzer(record, image_paths, job.prompt_text)
+            # AI 只拿画像里的事实（摘要行、迹象、指标），不拿程序下的结论 / 商家判断 / 信号
+            ai_input = {**record, "卖家画像": profile_facts(record.get("卖家画像"))}
+            ai_result = await self._ai_analyzer(ai_input, image_paths, job.prompt_text)
             if not ai_result:
                 return self._build_ai_error_result(
                     "AI analysis returned None after retries.",

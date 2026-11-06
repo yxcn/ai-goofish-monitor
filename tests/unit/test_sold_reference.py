@@ -32,10 +32,15 @@ def test_vanished_listings_need_two_absent_runs_and_keep_last_price():
     assert set(vanished) == {"B", "C"}
     assert vanished["B"]["price"] == 1050.0 and vanished["B"]["last_seen_at"] == "2026-11-06T09:00:00"
     assert vanished["C"]["source"] == "vanished"
-    # 只缺最新一轮不算消失（搜索排序抖动）
-    assert find_vanished_listings(_snapshots()[:5]) == [{"item_id": "C", "title": "ThinkPad T14 #C", "price": 1000.0, "last_seen_at": "2026-11-06T08:00:00", "source": "vanished"}]
-    # 单轮没有"消失"；超出窗口的也不算
+    # 三轮：C 在 run1 后连续两轮没出现才算消失，B 只缺最新一轮不算（搜索排序抖动）
+    assert find_vanished_listings(_snapshots()[:6]) == [{"item_id": "C", "title": "ThinkPad T14 #C", "price": 1000.0, "last_seen_at": "2026-11-06T08:00:00", "source": "vanished"}]
+    # 不足三轮不判消失（只有两轮时一次缺席就"消失"，会把抖动当成交）；超出窗口的也不算
+    assert find_vanished_listings(_snapshots()[:5]) == []
     assert find_vanished_listings(_snapshots()[:3]) == []
+    # 配件挂牌消失也不算成交样本
+    accessory = [_snap(1, "K", 80), _snap(2, "A", 1500), _snap(3, "A", 1500)]
+    accessory[0]["title"] = "ThinkPad T14 原装充电器"
+    assert find_vanished_listings(accessory) == []
     assert find_vanished_listings([_snap(1, "old", 900, day=1), _snap(2, "x", 1000, day=6), _snap(3, "x", 1000, day=6)], window_days=2) == []
     assert find_vanished_listings([]) == []
 
@@ -70,7 +75,23 @@ def test_select_sold_listings_filters_similar_non_accessory_items():
         "junk",
     ]
     picked = select_sold_listings(records, "ThinkPad T14")
-    assert [(entry["item_id"], entry["price"], entry["source"]) for entry in picked] == [("s1", 1499.0, "sold"), ("s6", 1800.0, "sold")]
+    # 只有标题同时含 thinkpad 和 t14 的才算同款成交样本：s2 gen6 虽然品类相同也不要
+    assert [(entry["item_id"], entry["price"], entry["source"]) for entry in picked] == [("s6", 1800.0, "sold")]
+
+
+def test_select_sold_listings_drops_cheap_parts_and_requires_all_keyword_tokens():
+    records = [{
+        "搜索关键字": "ThinkPad T14",
+        "商品信息": {"商品ID": "1", "当前售价": "¥1494", "品类ID": 50025387},
+        "卖家信息": {"卖家发布的商品列表": [
+            {"商品ID": "a", "商品标题": "ThinkPad T14 gen1 i5", "商品价格": "1300", "商品状态": "已售"},
+            {"商品ID": "b", "商品标题": "ThinkPad T14 坏屏机 拆机件", "商品价格": "200", "商品状态": "已售"},   # 低于 30%
+            {"商品ID": "c", "商品标题": "ThinkPad E16 Gen1", "商品价格": "3150", "商品状态": "已售", "品类ID": 50025387},
+            {"商品ID": "d", "商品标题": "联想小新15 r7", "商品价格": "2600", "商品状态": "已售", "品类ID": 50025387},
+            {"商品ID": "e", "商品标题": "t14 原装电源", "商品价格": "60", "商品状态": "已售"},
+        ]},
+    }]
+    assert [entry["item_id"] for entry in select_sold_listings(records, "ThinkPad T14")] == ["a"]
 
 
 def test_price_verdict_prefers_sold_reference_then_listing_median():

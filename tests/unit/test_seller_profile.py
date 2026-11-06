@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from src.seller_profile import build_seller_profile, category_mix, describe_category_mix
+from src.seller_profile import _places_match, build_seller_profile, category_mix, describe_category_mix, profile_facts, similarity_level
 
 NOW = datetime(2026, 11, 6, 15, 0)
 
@@ -254,3 +254,72 @@ def test_category_mix_groups_titles_and_reports_focus():
     assert describe_category_mix({"电脑数码": 7, "其他": 1}) == ("电脑数码 7、其他 1", "电脑数码")
     assert describe_category_mix({"其他": 5}) == ("其他 5", None)
     assert describe_category_mix({}) == ("", None)
+
+
+def test_accessories_and_cheap_parts_do_not_count_as_similar_items():
+    record = _thin_personal_seller_record()
+    record["商品信息"]["当前售价"] = "¥1494"
+    record["卖家信息"]["卖家发布的商品列表"] += [
+        _listing("a1", "ThinkPad 原装充电器 65W", 商品价格="60"),
+        _listing("a2", "ThinkPad 小红点鼠标", 商品价格="80"),
+        _listing("a3", "ThinkPad T14 坏屏拆机件", 商品价格="300"),      # 不到本商品价格 30%
+        _listing("a4", "ThinkPad X1 Carbon 2021", 商品价格="2800"),      # 这才是同类
+    ]
+    profile = build_seller_profile(record, now=NOW)
+    assert profile["指标"]["同类在售"] == 2   # 本商品 + X1 Carbon
+    assert profile["商家判断"] == "个人"
+    assert not any("同时在售" in e for e in profile["商家迹象"])
+
+
+def test_single_strong_sign_only_raises_caution_not_suspected_dealer():
+    record = _thin_personal_seller_record()
+    record["卖家信息"]["卖家发布的商品列表"] = [
+        _listing("1097788657985", "ThinkPad T14 i5 16G"),
+        _listing("2", "ThinkPad T14s 锐龙版"),
+        _listing("3", "ThinkPad X1 Carbon 2021"),
+    ]
+    profile = build_seller_profile(record, now=NOW)
+    assert profile["商家迹象"] == ["同时在售 3 件同类商品（笔记本电脑，含本商品）"]
+    assert profile["商家判断"] == "留意"
+    assert profile["结论"].startswith("有商家迹象，需留意：")
+    assert "⚠️ 疑似商家" not in profile["信号"]
+
+    # 一条明确迹象 + 一条弱迹象才到疑似商家
+    record["卖家信息"]["卖家发布的商品列表"] += [_listing(str(i), f"ThinkPad 周边 {i}", 商品价格="900") for i in range(10, 17)]
+    profile = build_seller_profile(record, now=NOW)
+    assert profile["商家判断"] == "疑似商家"
+
+
+def test_similarity_levels_and_keyword_tokens():
+    tokens = ("thinkpad", "t14")
+    assert similarity_level({"商品标题": "ThinkPad T14 gen2"}, 50025387, tokens, "笔记本电脑") == 3
+    assert similarity_level({"商品标题": "ThinkPad E16"}, 50025387, tokens, "笔记本电脑") == 2
+    assert similarity_level({"商品标题": "联想小新15", "品类ID": 50025387}, 50025387, tokens, "笔记本电脑") == 1
+    assert similarity_level({"商品标题": "二手笔记本电脑 戴尔"}, 50025387, tokens, "笔记本电脑") == 1
+    assert similarity_level({"商品标题": "儿童滑板车", "品类ID": 1}, 50025387, tokens, "笔记本电脑") == 0
+
+
+def test_city_only_shipping_place_cannot_contradict_province_ip():
+    # 发货地只有地级市，和省级 IP 属地比不出来：不下"不一致"结论
+    assert _places_match("江苏省", "", "苏州") is None
+    assert _places_match("江苏省", "地区未知", "苏州") is None
+    assert _places_match("江苏省", "江苏苏州", "苏州") is True
+    assert _places_match("山东省", "山东", "淄博") is True
+    assert _places_match("湖北省", "广东", "深圳") is False
+    assert _places_match("湖北省", "北京市", "") is False
+    assert _places_match("中国上海", "上海", "") is True
+
+    record = _thin_personal_seller_record()
+    record["商品信息"].update({"发货地区": "地区未知", "卖家所在城市": "苏州"})
+    record["卖家信息"]["卖家IP属地"] = "江苏省"
+    profile = build_seller_profile(record, now=NOW)
+    assert not any("不一致" in s for s in profile["信号"])
+    assert "下单前确认所在地" not in profile["结论"]
+
+
+def test_profile_facts_strip_conclusions():
+    profile = build_seller_profile(_thin_personal_seller_record(), now=NOW)
+    facts = profile_facts(profile)
+    assert set(facts) == {"摘要", "身份", "活跃", "交易", "历史", "口碑", "商家迹象", "新人卖家", "经营资质", "个人档案", "品类分布", "指标"}
+    assert "结论" not in facts and "商家判断" not in facts and "信号" not in facts
+    assert profile_facts(None) == {} and profile_facts("x") == {}

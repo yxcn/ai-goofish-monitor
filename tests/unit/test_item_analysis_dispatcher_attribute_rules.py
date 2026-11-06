@@ -213,6 +213,11 @@ def test_seller_profile_is_built_before_ai_and_attached_to_notifications():
     assert profile["商家判断"] == "个人"
     assert "✅ IP 属地与发货地一致" in profile["信号"]
     # AI 在画像算好之后才拿到记录；通知也带着同一份画像
-    assert seen["ai_record"]["卖家画像"] == profile
+    # AI 只拿事实部分，不拿程序下的结论 / 商家判断 / 信号
+    from src.seller_profile import profile_facts
+
+    assert seen["ai_record"]["卖家画像"] == profile_facts(profile)
+    assert "结论" not in seen["ai_record"]["卖家画像"] and "信号" not in seen["ai_record"]["卖家画像"]
+    assert seen["ai_record"]["卖家画像"]["商家迹象"] == profile["商家迹象"]
     assert seen["notify"]["卖家画像"] == profile
     assert seen["notify"]["ai_analysis"]["reason"] == "ok"

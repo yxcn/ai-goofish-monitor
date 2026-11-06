@@ -117,6 +117,29 @@ def _normalize_price_value(value):
     return value
 
 
+def _price_number(value) -> Optional[float]:
+    text = str(value or "").strip().replace("¥", "").replace(",", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _validate_price_range(min_price, max_price) -> None:
+    """最低价 / 最高价都得是非负数，两者都有时最低价不能高于最高价（倒置区间会让搜索永远 0 结果）。"""
+    low = _price_number(min_price)
+    high = _price_number(max_price)
+    for label, raw, number in (("最低价", min_price, low), ("最高价", max_price, high)):
+        if raw not in (None, "") and number is None:
+            raise ValueError(f"{label} 不是有效的数字：{raw}")
+        if number is not None and number < 0:
+            raise ValueError(f"{label} 不能为负数：{raw}")
+    if low is not None and high is not None and low > high:
+        raise ValueError(f"最低价 {min_price} 不能高于最高价 {max_price}")
+
+
 PROMPT_FILE_DIR = "prompts"
 
 
@@ -191,6 +214,11 @@ class Task(BaseModel):
     @classmethod
     def normalize_legacy_keyword_payload(cls, values):
         return _normalize_payload_keywords(values)
+
+    @model_validator(mode="after")
+    def check_price_range(self):
+        _validate_price_range(self.min_price, self.max_price)
+        return self
 
     @field_validator("ai_prompt_base_file", "ai_prompt_criteria_file", mode="before")
     @classmethod
@@ -279,6 +307,11 @@ class TaskCreate(BaseModel):
     @classmethod
     def convert_price_to_str(cls, value):
         return _normalize_price_value(value)
+
+    @model_validator(mode="after")
+    def check_price_range(self):
+        _validate_price_range(self.min_price, self.max_price)
+        return self
 
     @field_validator("cron", mode="before")
     @classmethod
@@ -372,6 +405,11 @@ class TaskUpdate(BaseModel):
     def convert_price_to_str(cls, value):
         return _normalize_price_value(value)
 
+    @model_validator(mode="after")
+    def check_price_range(self):
+        _validate_price_range(self.min_price, self.max_price)
+        return self
+
     @field_validator("cron", mode="before")
     @classmethod
     def normalize_cron(cls, value):
@@ -458,6 +496,11 @@ class TaskGenerateRequest(BaseModel):
     @classmethod
     def convert_price_to_str(cls, value):
         return _normalize_price_value(value)
+
+    @model_validator(mode="after")
+    def check_price_range(self):
+        _validate_price_range(self.min_price, self.max_price)
+        return self
 
     @field_validator("extra_keywords", "title_include_keywords", "title_exclude_keywords", mode="before")
     @classmethod

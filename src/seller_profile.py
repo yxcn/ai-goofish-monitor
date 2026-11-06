@@ -14,6 +14,23 @@ from typing import Iterable, Optional
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _FRACTION = re.compile(r"^\s*(\d+)\s*/\s*(\d+)\s*$")
 _PLACE_SUFFIXES = ("特别行政区", "自治区", "省", "市")
+# 省级行政区简称：发货地只有地级市（"苏州"）时和省级 IP 属地（"江苏省"）比不出来，只有候选里带省级名才下"不一致"结论
+PROVINCE_NAMES = frozenset((
+    "北京", "天津", "上海", "重庆", "河北", "山西", "辽宁", "吉林", "黑龙江", "江苏", "浙江", "安徽", "福建", "江西",
+    "山东", "河南", "湖北", "湖南", "广东", "海南", "四川", "贵州", "云南", "陕西", "甘肃", "青海", "台湾",
+    "内蒙古", "广西", "西藏", "宁夏", "新疆", "香港", "澳门",
+))
+
+# 配件 / 零件不算同类商品：充电器、鼠标、主板会把"同类在售 / 已售"和成交参考价一起带偏。
+# 只收没有歧义的词："内存 / 硬盘 / 键盘 / 电池 / 屏幕" 在整机标题里太常见（"16G内存 512G固态"、"电池健康 90%"），
+# 用它们会把整机当配件；这类零件靠价格下限（SIMILAR_PRICE_FLOOR）兜底。
+ACCESSORY_WORDS = (
+    "主板", "屏总成", "充电器", "适配器", "电源适配器", "内存条", "扩展坞", "坞站", "转接", "鼠标", "电脑包",
+    "内胆包", "贴膜", "支架", "数据线", "充电线", "保护壳", "键帽", "小红点", "螺丝", "拆机件", "配件", "零件",
+    "散热器", "风扇", "底座", "外接键盘", "排线", "屏线", "触摸板", "掌托", "转轴", "壳子", "上盖", "底盖",
+)
+# 同类商品的价格下限：低于本商品价格 30% 的"同类"多半是零件或残件
+SIMILAR_PRICE_FLOOR = 0.3
 
 # 商家迹象的阈值
 SIMILAR_ON_SALE_STRONG = 3   # 同时在售 N 件同类（含本商品）
@@ -82,8 +99,15 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
 
     on_sale = [x for x in items if x.get("商品状态") == "在售"]
     sold = [x for x in items if x.get("商品状态") == "已售"]
-    similar_on_sale = [x for x in on_sale if _is_similar(x, category_id, tokens, category_label)]
-    similar_sold = [x for x in sold if _is_similar(x, category_id, tokens, category_label)]
+    this_price = parse_price_text(item.get("当前售价"))
+    similar_on_sale = [
+        x for x in on_sale
+        if _is_similar(x, category_id, tokens, category_label) and not _looks_like_accessory(x, this_price, this_id)
+    ]
+    similar_sold = [
+        x for x in sold
+        if _is_similar(x, category_id, tokens, category_label) and not _looks_like_accessory(x, this_price, this_id)
+    ]
     this_entry = next((x for x in items if str(x.get("商品ID") or "") == this_id), None)
 
     seller_ratings = [r for r in ratings if _user_role(r) == "卖家"]
@@ -145,6 +169,7 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
         weak.append(f"同时在售 {len(on_sale)} 件商品")
     evidence = strong + weak
 
+    # 单条明确迹象只到"留意"：一个人五年里卖过三台笔记本、或同时挂三台，还不足以叫疑似商家
     if not has_profile:
         identity_verdict = "卖家资料未采集，无法判断是否商家"
         dealer_level = "未知"
@@ -154,10 +179,10 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
     elif len(strong) >= 2:
         identity_verdict = "商家特征明显：" + "；".join(evidence)
         dealer_level = "商家"
-    elif strong or len(weak) >= 2:
+    elif (strong and weak) or len(weak) >= 3:
         identity_verdict = "疑似商家：" + "；".join(evidence)
         dealer_level = "疑似商家"
-    elif weak:
+    elif strong or weak:
         identity_verdict = "有商家迹象，需留意：" + "；".join(evidence)
         dealer_level = "留意"
     else:
@@ -380,16 +405,71 @@ def _user_role(rating: dict) -> str:
 
 
 def _is_similar(entry: dict, category_id, tokens: tuple[str, ...], category_label: str) -> bool:
-    """同类 = 品类 ID 相同，或标题命中搜索关键词 / 分类名。"""
+    """画像用的"同类"：品类 ID 相同，或标题命中任一搜索关键词 / 分类名（配件和价格下限在调用处另判）。"""
+    return similarity_level(entry, category_id, tokens, category_label) > 0
+
+
+def similarity_level(entry: dict, category_id, tokens: tuple[str, ...], category_label: str) -> int:
+    """0 = 不同类；1 = 只是品类 ID 相同或标题含分类名；2 = 标题命中任一关键词；3 = 标题命中全部关键词。
+
+    成交参考价只认 3（"ThinkPad T14" 的成交样本里不能混进 s2 / E16 / 小新），
+    画像的"同类在售 / 已售"认 ≥ 1。
+    """
+    title = str(entry.get("商品标题") or "").lower()
+    hits = [token for token in tokens if token in title] if title else []
+    if tokens and len(hits) == len(tokens):
+        return 3
+    if hits:
+        return 2
     entry_category = entry.get("品类ID")
     if category_id not in (None, "") and entry_category not in (None, "") and str(entry_category) == str(category_id):
-        return True
-    title = str(entry.get("商品标题") or "").lower()
-    if not title:
+        return 1
+    if title and category_label and category_label.lower() in title:
+        return 1
+    return 0
+
+
+def is_accessory_title(title) -> bool:
+    text = str(title or "")
+    return any(word in text for word in ACCESSORY_WORDS)
+
+
+def parse_price_text(value) -> Optional[float]:
+    """'¥1,494' / '1.2万' / 1494 -> 1494.0；解析不了返回 None。"""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace("¥", "").replace(",", "").replace("￥", "")
+    if not text:
+        return None
+    try:
+        if text.endswith("万"):
+            return float(text[:-1]) * 10000
+        return float(text)
+    except ValueError:
+        match = _NUMBER.search(text)
+        return float(match.group()) if match else None
+
+
+def _looks_like_accessory(entry: dict, this_price: Optional[float], this_id: str) -> bool:
+    """配件词命中，或价格不到本商品的 30%（本商品自己不算）。"""
+    if str(entry.get("商品ID") or "") == this_id:
         return False
-    if category_label and category_label.lower() in title:
+    if is_accessory_title(entry.get("商品标题")):
         return True
-    return any(token in title for token in tokens)
+    price = parse_price_text(entry.get("商品价格"))
+    if this_price and price is not None and price < this_price * SIMILAR_PRICE_FLOOR:
+        return True
+    return False
+
+
+def profile_facts(profile: Optional[dict]) -> dict:
+    """喂给 AI 的画像只保留事实（各行摘要、迹象、指标），不带程序下的结论 / 商家判断 / 信号，避免 AI 把推断当事实复述。"""
+    if not isinstance(profile, dict):
+        return {}
+    keep = ("摘要", "身份", "活跃", "交易", "历史", "口碑", "商家迹象", "新人卖家", "经营资质", "个人档案", "品类分布", "指标")
+    return {key: profile[key] for key in keep if key in profile}
 
 
 def _keyword_tokens(*keywords) -> tuple[str, ...]:
@@ -447,7 +527,11 @@ def _place(value) -> str:
 
 
 def _places_match(ip_location: str, region: str, city: str) -> Optional[bool]:
-    """IP 属地和发货地是否一致；发货地只有区/县（如“海淀区”）时和省级 IP 属地比不出来，返回 None。"""
+    """IP 属地和发货地是否一致。
+
+    IP 属地是省级（"江苏省"）；发货地只有区/县（"海淀区"）或只有地级市（"苏州"）时比不出来，返回 None，
+    只有候选里带省级名（"广东"、"北京市"）且对不上才算不一致。
+    """
     ip = _place(ip_location)
     raw_candidates = [p for p in ((region or "").strip(), (city or "").strip()) if p]
     candidates = [_place(p) for p in raw_candidates]
@@ -455,9 +539,13 @@ def _places_match(ip_location: str, region: str, city: str) -> Optional[bool]:
         return None
     if any(ip in c or c in ip for c in candidates if c):
         return True
-    if all(p.endswith(("区", "县", "镇")) for p in raw_candidates):
+    if not any(_has_province_name(c) for c in candidates):
         return None
     return False
+
+
+def _has_province_name(place: str) -> bool:
+    return any(place.startswith(name) for name in PROVINCE_NAMES)
 
 
 def _join_place(region: str, city: str) -> str:

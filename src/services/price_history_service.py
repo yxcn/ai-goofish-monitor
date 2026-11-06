@@ -13,7 +13,8 @@ from typing import Any, Iterable, Optional
 
 from src.infrastructure.persistence.sqlite_bootstrap import bootstrap_sqlite_storage
 from src.infrastructure.persistence.sqlite_connection import sqlite_connection
-from src.seller_profile import _is_similar, _keyword_tokens
+from src.infrastructure.persistence.storage_names import build_result_filename
+from src.seller_profile import ACCESSORY_WORDS, _keyword_tokens, is_accessory_title, similarity_level  # noqa: F401
 
 PRICE_HISTORY_DIR = "price_history"
 DEFAULT_HISTORY_WINDOW_DAYS = 30
@@ -25,8 +26,9 @@ SOLD_REFERENCE_WINDOW_DAYS = 30
 SOLD_REFERENCE_ABSENT_RUNS = 2      # 连续两轮没出现才算消失，避免搜索排序抖动误判
 MIN_REFERENCE_SAMPLES = 3
 PRICE_VERDICT_THRESHOLD = 0.10      # 比参考价低/高 10% 以上才下结论
-# 配件不算同类成交样本（主板 600 会把笔记本的成交价拉低）
-ACCESSORY_WORDS = ("主板", "屏幕", "屏总成", "键盘", "电池", "外壳", "充电器", "适配器", "内存条", "硬盘", "配件", "底座", "扩展坞", "风扇", "散热", "转接")
+# 配件词表和同类判定与卖家画像共用（src/seller_profile.py）：成交样本只认标题命中全部关键词的商品
+SOLD_SIMILARITY_LEVEL = 3
+PARTS_PRICE_FLOOR = 0.3   # 消失挂牌低于挂牌中位价 30% 视为零件，不算成交样本
 
 
 def normalize_keyword_slug(keyword: str) -> str:
@@ -290,9 +292,10 @@ def find_vanished_listings(
         run_id = str(record.get("run_id") or "")
         if run_id and run_id not in run_order:
             run_order.append(run_id)
-    if len(run_order) < 2:
+    # 不足 absent_runs + 1 轮时不判消失：只有两轮就一次缺席即"消失"，会把搜索抖动当成交
+    if len(run_order) < absent_runs + 1:
         return []
-    recent_runs = set(run_order[-min(absent_runs, len(run_order) - 1):])
+    recent_runs = set(run_order[-absent_runs:])
     latest_time = datetime.fromisoformat(str(ordered[-1].get("snapshot_time")))
 
     last_seen: dict[str, dict] = {}
@@ -304,6 +307,8 @@ def find_vanished_listings(
     vanished = []
     for item_id, record in last_seen.items():
         if str(record.get("run_id") or "") in recent_runs:
+            continue
+        if is_accessory_title(record.get("title")):
             continue
         price = parse_price_value(record.get("price"))
         if price is None:
@@ -324,7 +329,12 @@ def find_vanished_listings(
 
 
 def select_sold_listings(records: Iterable[dict], keyword: str) -> list[dict]:
-    """从结果记录里挑出各卖家"已售"的同类商品（品类相同或标题命中关键词，排除配件），按商品 ID 去重。"""
+    """从结果记录里挑出各卖家"已售"的同款商品，按商品 ID 去重。
+
+    只认标题命中搜索关键词全部 token 的商品（"ThinkPad T14" 要同时含 thinkpad 和 t14）：
+    品类 ID 相同的 s2 / E16 / 小新 价格差一倍，混进来成交参考价就没意义。配件和低于本商品
+    价格 30% 的"同款"也不要。
+    """
     tokens = _keyword_tokens(keyword)
     picked: dict[str, dict] = {}
     for record in records:
@@ -334,18 +344,20 @@ def select_sold_listings(records: Iterable[dict], keyword: str) -> list[dict]:
         seller = record.get("卖家信息") if isinstance(record.get("卖家信息"), dict) else {}
         attributes = item.get("商品属性") if isinstance(item.get("商品属性"), dict) else {}
         category_label = str(attributes.get("分类") or "").strip()
-        record_tokens = tokens + _keyword_tokens(record.get("搜索关键字"), record.get("实际搜索词"))
+        this_price = parse_price_value(item.get("当前售价"))
         for listing in seller.get("卖家发布的商品列表") or []:
             if not isinstance(listing, dict) or listing.get("商品状态") != "已售":
                 continue
             title = str(listing.get("商品标题") or "")
-            if any(word in title for word in ACCESSORY_WORDS):
+            if is_accessory_title(title):
                 continue
-            if not _is_similar(listing, item.get("品类ID"), record_tokens, category_label):
+            if similarity_level(listing, item.get("品类ID"), tokens, category_label) < SOLD_SIMILARITY_LEVEL:
                 continue
             price = parse_price_value(listing.get("商品价格"))
             listing_id = str(listing.get("商品ID") or "")
             if price is None or not listing_id or listing_id in picked:
+                continue
+            if this_price and price < this_price * 0.3:
                 continue
             picked[listing_id] = {"item_id": listing_id, "title": title, "price": price, "source": "sold"}
     return list(picked.values())
@@ -357,7 +369,11 @@ def load_sold_listings(keyword: str) -> list[dict]:
     slug = normalize_keyword_slug(keyword)
     records = []
     with sqlite_connection() as conn:
-        rows = conn.execute("SELECT keyword, raw_json FROM result_items").fetchall()
+        # 只读本关键词的结果文件，不再全表扫描所有任务
+        rows = conn.execute(
+            "SELECT keyword, raw_json FROM result_items WHERE result_filename = ? OR keyword = ?",
+            (build_result_filename(keyword), keyword),
+        ).fetchall()
     for row in rows:
         if normalize_keyword_slug(row["keyword"]) != slug:
             continue
@@ -375,8 +391,14 @@ def build_sold_reference(
     window_days: int = SOLD_REFERENCE_WINDOW_DAYS,
     min_samples: int = MIN_REFERENCE_SAMPLES,
 ) -> dict:
-    """合成成交参考价：消失挂牌 + 卖家已售同类，取中位数；样本少于 min_samples 时标记不可靠。"""
+    """合成成交参考价：消失挂牌 + 卖家已售同款，取中位数；样本少于 min_samples 时标记不可靠。
+
+    低于全部挂牌中位价 30% 的消失挂牌按零件处理（配件词表只收无歧义的词，剩下的靠价格兜底）。
+    """
     vanished = find_vanished_listings(snapshots, window_days=window_days)
+    listing_prices = [price for price in (parse_price_value(r.get("price")) for r in _dedupe_latest(snapshots, "item_id")) if price]
+    floor = float(median(listing_prices)) * PARTS_PRICE_FLOOR if listing_prices else 0.0
+    vanished = [entry for entry in vanished if entry["price"] >= floor]
     sold = [entry for entry in (sold_listings or []) if parse_price_value(entry.get("price")) is not None]
     samples = [{"price": entry["price"]} for entry in vanished] + [{"price": parse_price_value(entry["price"])} for entry in sold]
     summary = _summarize_prices(samples)
@@ -466,7 +488,9 @@ def build_item_price_context(
     current_price: Optional[float],
     market_snapshots: Optional[list[dict]] = None,
     sold_listings: Optional[list[dict]] = None,
+    sold_reference: Optional[dict] = None,
 ) -> dict:
+    """sold_reference 传入时直接使用（结果页对一批记录只算一次），否则由快照 + 已售样本现算。"""
     if not item_id:
         return {"observation_count": 0, "deal_score": None, "deal_label": "暂无数据"}
 
@@ -487,7 +511,8 @@ def build_item_price_context(
     market_avg = market_summary.get("avg_price")
     market_median = market_summary.get("median_price")
     # 消失挂牌从全部快照里找（它们多半不在可见结果里），已售同类来自已采集的卖家资料
-    sold_reference = build_sold_reference(snapshots, sold_listings)
+    if sold_reference is None:
+        sold_reference = build_sold_reference(snapshots, sold_listings)
     verdict = build_price_verdict(
         price_now,
         market_median=market_median,

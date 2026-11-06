@@ -199,3 +199,23 @@ def test_task_file_paths_accept_project_relative_values():
     assert normalized.ai_prompt_criteria_file == "prompts/t14_criteria.txt"
     assert normalized.account_state_file == "state/yx.json"
     assert TaskUpdate(ai_prompt_criteria_file=None).model_dump(exclude_unset=True) == {"ai_prompt_criteria_file": None}
+
+
+@pytest.mark.parametrize("low, high", [("500", "100"), ("-1", "100"), ("abc", "100"), (500, 100)])
+def test_price_range_must_be_non_negative_and_ordered(low, high):
+    with pytest.raises(ValidationError):
+        _full_task(min_price=low, max_price=high)
+    with pytest.raises(ValidationError):
+        TaskUpdate(min_price=low, max_price=high)
+
+
+def test_price_range_accepts_open_ended_and_ordered_values():
+    task = _full_task(min_price="600", max_price="2000")
+    assert (task.min_price, task.max_price) == ("600", "2000")
+    assert _full_task(min_price=None, max_price="2000").max_price == "2000"
+    # 创建 DTO 会把空串归一成 None；Task 实体本身不改写字段
+    from src.domain.models.task import TaskCreate
+
+    assert TaskCreate(task_name="t", keyword="k", description="需求", min_price="", max_price="").min_price is None
+    # 局部更新只带一边时不做交叉校验
+    assert TaskUpdate(min_price="3000").model_dump(exclude_unset=True) == {"min_price": "3000"}
