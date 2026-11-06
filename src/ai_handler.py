@@ -5,8 +5,10 @@ import os
 import re
 import sys
 import shutil
+import time
 import traceback
 from datetime import datetime, timedelta
+from typing import Optional
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
 import requests
@@ -34,7 +36,11 @@ from src.ai_message_builder import (
     build_analysis_text_prompt,
     build_user_message_content,
 )
-from src.infrastructure.external.ai_client import AIAnalysisTimeoutError
+from src.infrastructure.config.env_manager import env_manager
+from src.infrastructure.external.ai_client import (
+    AIAnalysisTimeoutError,
+    dump_ai_product_json,
+)
 from src.services.ai_response_parser import (
     AIResponseFormatError,
     AIResponseTruncatedError,
@@ -56,7 +62,7 @@ from src.services.ai_request_compat import (
     read_image_mime,
     retry_backoff_seconds,
 )
-from src.services.notification_service import build_notification_service
+from src.services.notification_service import NotificationService, build_notification_service
 from src.utils import convert_goofish_link
 
 
@@ -310,6 +316,13 @@ def cleanup_task_images(task_name):
         safe_print(f"   [清理] 任务 '{task_name}' 的临时图片目录不存在: {task_image_dir}")
 
 
+AI_DEBUG_LOG_DIR = os.path.join("logs", "ai")
+AI_DEBUG_LOG_TEXT_CHARS = 2000
+AI_DEBUG_LOG_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
+# 上次清理过期 AI 调试日志的时间（time.monotonic()）；None 表示本进程还没清理过
+_last_ai_log_cleanup_at: Optional[float] = None
+
+
 def cleanup_ai_logs(logs_dir: str, keep_days: int = 1) -> None:
     try:
         cutoff = datetime.now() - timedelta(days=keep_days)
@@ -324,6 +337,88 @@ def cleanup_ai_logs(logs_dir: str, keep_days: int = 1) -> None:
                 os.remove(os.path.join(logs_dir, filename))
     except Exception as e:
         safe_print(f"   [日志] 清理AI日志时出错: {e}")
+
+
+def _maybe_cleanup_ai_logs(logs_dir: str) -> bool:
+    """过期日志清理一天最多跑一次（模块级时间戳），不再每个商品都 listdir。返回是否真的清理了。"""
+    global _last_ai_log_cleanup_at
+    now = time.monotonic()
+    if (
+        _last_ai_log_cleanup_at is not None
+        and now - _last_ai_log_cleanup_at < AI_DEBUG_LOG_CLEANUP_INTERVAL_SECONDS
+    ):
+        return False
+    _last_ai_log_cleanup_at = now
+    cleanup_ai_logs(logs_dir, keep_days=1)
+    return True
+
+
+def _data_url_byte_size(data_url: str) -> int:
+    """从 base64 data URL 反推原图字节数（不解码）。"""
+    payload = data_url.rsplit(",", 1)[-1] if isinstance(data_url, str) else ""
+    stripped = payload.rstrip("=")
+    return max(0, len(stripped) * 3 // 4)
+
+
+def _message_text_parts(messages: list) -> list[str]:
+    texts: list[str] = []
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    texts.append(str(part.get("text", "")))
+    return texts
+
+
+def build_ai_debug_log_payload(
+    *,
+    product_data: dict,
+    messages: list,
+    image_data_urls: list,
+    api_mode: str,
+    result=None,
+    error: Optional[BaseException] = None,
+) -> dict:
+    """AI 调试日志的内容：请求摘要（模型、api_mode、消息条数、文本前 2000 字、图片张数与字节数）+ 结果或错误。"""
+    item_info = product_data.get("商品信息", {}) if isinstance(product_data, dict) else {}
+    text_parts = _message_text_parts(messages)
+    combined_text = "\n".join(text_parts)
+    payload = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "task_name": product_data.get("任务名称") or product_data.get("任务名") or "unknown",
+        "product_id": item_info.get("商品ID", "N/A"),
+        "title": item_info.get("商品标题", "无"),
+        "model": MODEL_NAME,
+        "api_mode": api_mode,
+        "message_count": len(messages or []),
+        "text_chars": len(combined_text),
+        "text_head": combined_text[:AI_DEBUG_LOG_TEXT_CHARS],
+        "image_count": len(image_data_urls or []),
+        "image_bytes": [_data_url_byte_size(url) for url in image_data_urls or []],
+        "result": result,
+        "error": f"{type(error).__name__}: {error}" if error is not None else None,
+    }
+    return payload
+
+
+def _write_ai_debug_log(product_id, payload: dict) -> Optional[str]:
+    """只在 AI_DEBUG_MODE 下调用。文件名带商品 ID；写失败只打一行日志，不影响分析流程。"""
+    try:
+        os.makedirs(AI_DEBUG_LOG_DIR, exist_ok=True)
+        _maybe_cleanup_ai_logs(AI_DEBUG_LOG_DIR)
+        safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(product_id or "unknown"))[:64]
+        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_id}.log"
+        filepath = os.path.join(AI_DEBUG_LOG_DIR, filename)
+        with open(filepath, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, default=str)
+        safe_print(f"   [AI DEBUG] 请求摘要已保存到: {filepath}")
+        return filepath
+    except Exception as exc:
+        safe_print(f"   [AI DEBUG] 保存 AI 调试日志时出错: {exc}")
+        return None
 
 
 def encode_image_to_base64(image_path):
@@ -403,6 +498,38 @@ def validate_ai_response_format(parsed_response):
     return True
 
 
+# 爬虫进程内 NotificationService 只构造一次：build_notification_service() 每次要读 17 遍 .env。
+# 缓存按 .env 的 (mtime_ns, size) 失效，Web 端改了通知设置后正在跑的爬虫下一次推送就能拿到新配置。
+_notification_service_cache: dict = {"service": None, "signature": None}
+
+
+def _env_file_signature():
+    env_file = getattr(env_manager, "env_file", None)
+    if env_file is None:
+        return None
+    try:
+        stat = os.stat(env_file)
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def get_notification_service() -> NotificationService:
+    """返回进程内缓存的 NotificationService；.env 变了就重新构造。"""
+    signature = _env_file_signature()
+    cache = _notification_service_cache
+    if cache["service"] is None or cache["signature"] != signature:
+        cache["service"] = build_notification_service()
+        cache["signature"] = signature
+    return cache["service"]
+
+
+def reset_notification_service() -> None:
+    """强制下一次推送重新读取通知配置（测试 / 显式重载配置时用）。"""
+    _notification_service_cache["service"] = None
+    _notification_service_cache["signature"] = None
+
+
 async def send_ntfy_notification(product_data, reason):
     """兼容旧调用名，内部统一走 NotificationService。
 
@@ -410,7 +537,7 @@ async def send_ntfy_notification(product_data, reason):
     它只对抛异常生效，而发送失败被封装成 success=False 返回，装饰器从未真正重试过。
     返回各渠道结果，调用方据此记录推送状态。
     """
-    service = build_notification_service()
+    service = get_notification_service()
     if not service.clients:
         safe_print(
             "警告：未在 .env 文件中配置任何通知服务，跳过通知。"
@@ -550,12 +677,13 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
         safe_print("   [AI分析] 错误：未提供AI分析所需的prompt文本。")
         return None
 
-    product_details_json = json.dumps(product_data, ensure_ascii=False, indent=2)
+    # 精简副本：去掉图片 URL、截短链接、卖家商品/评价列表各最多 30 条；紧凑序列化不缩进
+    product_details_json = dump_ai_product_json(product_data)
     system_prompt = prompt_text
 
     if AI_DEBUG_MODE:
         safe_print("\n--- [AI DEBUG] ---")
-        safe_print("--- PRODUCT DATA (JSON) ---")
+        safe_print("--- PRODUCT DATA (JSON, 已精简) ---")
         safe_print(product_details_json)
         safe_print("--- PROMPT TEXT (完整内容) ---")
         safe_print(prompt_text)
@@ -571,37 +699,33 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
     user_content = build_user_message_content(combined_text_prompt, image_data_urls)
     messages = [{"role": "user", "content": user_content}]
 
-    # 保存最终传输内容到日志文件
+    if not AI_DEBUG_MODE:
+        return await _analyze_with_total_timeout(messages, product_id)
+
+    # 调试模式：把请求摘要和最终结果 / 错误一起落盘，文件名带商品 ID
+    result = None
+    error: Optional[BaseException] = None
     try:
-        # 创建logs文件夹
-        logs_dir = os.path.join("logs", "ai")
-        os.makedirs(logs_dir, exist_ok=True)
-        cleanup_ai_logs(logs_dir, keep_days=1)
+        result = await _analyze_with_total_timeout(messages, product_id)
+        return result
+    except Exception as exc:
+        error = exc
+        raise
+    finally:
+        _write_ai_debug_log(
+            product_id,
+            build_ai_debug_log_payload(
+                product_data=product_data,
+                messages=messages,
+                image_data_urls=image_data_urls,
+                api_mode=_compat_profile.api_mode,
+                result=result,
+                error=error,
+            ),
+        )
 
-        # 生成日志文件名（当前时间）
-        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_filename = f"{current_time}.log"
-        log_filepath = os.path.join(logs_dir, log_filename)
 
-        task_name = product_data.get("任务名称") or product_data.get("任务名") or "unknown"
-        log_payload = {
-            "timestamp": current_time,
-            "task_name": task_name,
-            "product_id": product_id,
-            "title": item_info.get("商品标题", "无"),
-            "image_count": len(image_data_urls),
-        }
-        log_content = json.dumps(log_payload, ensure_ascii=False)
-
-        # 写入日志文件
-        with open(log_filepath, 'w', encoding='utf-8') as f:
-            f.write(log_content)
-
-        safe_print(f"   [日志] AI分析请求已保存到: {log_filepath}")
-
-    except Exception as e:
-        safe_print(f"   [日志] 保存AI分析日志时出错: {e}")
-
+async def _analyze_with_total_timeout(messages, product_id):
     total_timeout = AI_ANALYSIS_TOTAL_TIMEOUT_SECONDS
     if not total_timeout or total_timeout <= 0:
         return await _run_ai_analysis_attempts(messages, product_id)

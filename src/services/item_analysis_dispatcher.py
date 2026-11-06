@@ -78,6 +78,18 @@ class ItemAnalysisDispatcher:
         while self._tasks:
             await asyncio.gather(*tuple(self._tasks))
 
+    async def cancel_all(self) -> int:
+        """取消所有在途分析任务并等它们退出，返回取消的数量。
+
+        供爬虫任务被取消时调用：不再 join 等全部分析跑完，直接收尾。
+        """
+        pending = [task for task in tuple(self._tasks) if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        return len(pending)
+
     async def _process_with_limit(self, job: ItemAnalysisJob) -> None:
         async with self._semaphore:
             await self._process_job(job)
@@ -156,10 +168,12 @@ class ItemAnalysisDispatcher:
         return evaluate_keyword_rules(list(job.keyword_rules), search_text)
 
     def _build_skip_ai_result(self) -> dict:
+        # 不标成 "ai"：dashboard 的"AI 推荐数"只统计 analysis_source == "ai" 且 is_recommended 的记录，
+        # 跳过分析的商品全部推送（is_recommended 保持 True）但不算 AI 推荐
         return {
-            "analysis_source": "ai",
+            "analysis_source": "skipped",
             "is_recommended": True,
-            "reason": "商品已跳过AI分析，直接通知",
+            "reason": "已跳过 AI 分析（SKIP_AI_ANALYSIS），直接通知",
             "keyword_hit_count": 0,
         }
 

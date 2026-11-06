@@ -84,10 +84,23 @@ class WebhookClient(NotificationClient):
         ) or {}
         rendered = self._render_template(params, message)
         parsed_url = list(urlparse(self.webhook_url))
-        query = dict(parse_qsl(parsed_url[4]))
-        query.update(rendered)
-        parsed_url[4] = urlencode(query)
+        # 用列表保留 URL 原有的全部参数：dict(parse_qsl(...)) 会把 token= 这样的空值丢掉、
+        # 把 a=1&a=2 合并成最后一个；再把 WEBHOOK_QUERY_PARAMETERS 追加到后面
+        query_pairs = parse_qsl(parsed_url[4], keep_blank_values=True)
+        for key, value in rendered.items():
+            query_pairs.append((str(key), self._query_value(value)))
+        parsed_url[4] = urlencode(query_pairs, doseq=True)
         return urlunparse(parsed_url)
+
+    @staticmethod
+    def _query_value(value: Any) -> Any:
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (str, bytes, list, tuple)):
+            return value
+        return str(value)
 
     def _build_body(
         self,

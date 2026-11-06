@@ -3,12 +3,14 @@ AI 客户端封装
 提供统一的 AI 调用接口
 """
 import asyncio
+import copy
 import ipaddress
 import os
 import json
 import base64
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from src.ai_message_builder import (
@@ -41,6 +43,139 @@ from src.services.ai_response_parser import (
 
 class AIAnalysisTimeoutError(TimeoutError):
     """单个商品的 AI 分析（含所有重试）超过了总时限。"""
+
+
+def redact_url_userinfo(url: str) -> str:
+    """把 URL 里的 ``user:password@`` 换成 ``***@``，供打日志用；None / 空串 / 无账号的 URL 原样返回。
+
+    代理地址常写成 ``http://user:pass@host:port``，直接 print 会把密码留在任务日志里。
+    也兼容没写 scheme 的 ``user:pass@host:port``。
+    """
+    if not url or not isinstance(url, str):
+        return url
+    prefix = ""
+    candidate = url
+    if "://" not in url:
+        # 没有 scheme 时 urlsplit 会把 "user" 当成 scheme，先补上 // 让它按 netloc 解析
+        candidate = f"//{url}"
+        prefix = "//"
+    try:
+        parts = urlsplit(candidate)
+    except ValueError:
+        return url
+    if "@" not in parts.netloc:
+        return url
+    hostport = parts.netloc.rsplit("@", 1)[1]
+    redacted = urlunsplit(parts._replace(netloc=f"***@{hostport}"))
+    if prefix and redacted.startswith(prefix):
+        redacted = redacted[len(prefix):]
+    return redacted
+
+
+# ---- 送给模型的商品 JSON 精简 ----
+# 图片已经以附件形式给了模型，JSON 里的图片 URL 列表只是在烧 token
+_IMAGE_URL_FIELDS = ("商品图片列表", "商品主图链接", "商品主图", "商品图片", "卖家头像链接")
+_SELLER_ITEM_KEEP_FIELDS = ("商品标题", "商品价格", "商品状态", "发布标签")
+# base_prompt.txt 里描述了 评价来源角色 / 该用户在此交易中的角色 的含义，这两个字段必须保留
+_RATING_KEEP_FIELDS = ("评价类型", "评价时间", "评价来源角色", "该用户在此交易中的角色", "评价内容")
+AI_PAYLOAD_MAX_SELLER_ITEMS = 30
+AI_PAYLOAD_MAX_RATINGS = 30
+AI_PAYLOAD_RATING_TEXT_CHARS = 80
+
+
+def _compact_item_link(link: Any) -> Any:
+    """商品链接只保留 ``?id=``：搜索接口返回的 targetUrl 带一长串埋点参数，对判断没用。"""
+    if not isinstance(link, str) or "?" not in link:
+        return link
+    try:
+        parts = urlsplit(link)
+    except ValueError:
+        return link
+    ids = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key == "id"]
+    return urlunsplit(parts._replace(query=urlencode(ids[:1]) if ids else "", fragment=""))
+
+
+def _truncate_text(value: Any, limit: int) -> Any:
+    if not isinstance(value, str) or len(value) <= limit:
+        return value
+    return value[: limit - 1] + "…"
+
+
+def _compact_seller_items(items: Any) -> Any:
+    if not isinstance(items, list):
+        return items
+    compacted = []
+    for entry in items[:AI_PAYLOAD_MAX_SELLER_ITEMS]:
+        if not isinstance(entry, dict):
+            continue
+        compacted.append({key: entry[key] for key in _SELLER_ITEM_KEEP_FIELDS if key in entry})
+    return compacted
+
+
+def _compact_ratings(ratings: Any) -> Any:
+    if not isinstance(ratings, list):
+        return ratings
+    compacted = []
+    for entry in ratings[:AI_PAYLOAD_MAX_RATINGS]:
+        if not isinstance(entry, dict):
+            continue
+        slim = {key: entry[key] for key in _RATING_KEEP_FIELDS if key in entry}
+        if "评价内容" in slim:
+            slim["评价内容"] = _truncate_text(slim["评价内容"], AI_PAYLOAD_RATING_TEXT_CHARS)
+        compacted.append(slim)
+    return compacted
+
+
+def _compact_item_info(item_info: dict) -> dict:
+    slim = {key: value for key, value in item_info.items() if key not in _IMAGE_URL_FIELDS}
+    if "商品链接" in slim:
+        slim["商品链接"] = _compact_item_link(slim["商品链接"])
+    return slim
+
+
+def _compact_seller_info(seller_info: dict) -> dict:
+    slim = {key: value for key, value in seller_info.items() if key not in _IMAGE_URL_FIELDS}
+    if "卖家发布的商品列表" in slim:
+        slim["卖家发布的商品列表"] = _compact_seller_items(slim["卖家发布的商品列表"])
+    if "卖家收到的评价列表" in slim:
+        slim["卖家收到的评价列表"] = _compact_ratings(slim["卖家收到的评价列表"])
+    return slim
+
+
+def build_ai_product_payload(product_data: dict) -> dict:
+    """返回送给模型的精简副本，不改动入参。
+
+    - 去掉 商品图片列表 / 商品主图 之类的图片 URL（图片已作为附件发送）；
+    - 商品链接 只保留 ``?id=``；
+    - 卖家发布的商品列表 最多 30 条，每条只留 商品标题 / 商品价格 / 商品状态 / 发布标签；
+    - 卖家收到的评价列表 最多 30 条，每条只留 评价类型 / 评价时间 / 评价来源角色 /
+      该用户在此交易中的角色 / 评价内容（截到 80 字）；
+    - 其他字段原样保留（作为卖家的好评数 等汇总字段都在 卖家信息 顶层，不受影响）。
+    """
+    if not isinstance(product_data, dict):
+        return product_data
+    payload: dict = {}
+    for key, value in product_data.items():
+        if key in _IMAGE_URL_FIELDS:
+            continue
+        if key == "商品信息" and isinstance(value, dict):
+            payload[key] = copy.deepcopy(_compact_item_info(value))
+        elif key == "卖家信息" and isinstance(value, dict):
+            payload[key] = copy.deepcopy(_compact_seller_info(value))
+        elif key == "商品链接":
+            payload[key] = _compact_item_link(value)
+        else:
+            payload[key] = copy.deepcopy(value)
+    return payload
+
+
+def dump_ai_product_json(product_data: dict) -> str:
+    """精简 + 紧凑序列化（不缩进），两条 AI 调用链共用。"""
+    return json.dumps(
+        build_ai_product_payload(product_data),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _normalize_no_proxy_host(part: str) -> str:
@@ -141,7 +276,7 @@ class AIClient:
 
         try:
             if self.settings.proxy_url:
-                print(f"正在为 AI 请求使用代理: {self.settings.proxy_url}")
+                print(f"正在为 AI 请求使用代理: {redact_url_userinfo(self.settings.proxy_url)}")
                 os.environ['HTTP_PROXY'] = self.settings.proxy_url
                 os.environ['HTTPS_PROXY'] = self.settings.proxy_url
 
@@ -225,8 +360,8 @@ class AIClient:
             return None
 
     def _build_messages(self, product_data: Dict, image_paths: List[str], prompt_text: str) -> List[Dict]:
-        """构建 AI 消息。图片只取前 N 张、跳过超大图，MIME 按文件头判断。"""
-        product_json = json.dumps(product_data, ensure_ascii=False, indent=2)
+        """构建 AI 消息。商品 JSON 先精简再紧凑序列化；图片只取前 N 张、跳过超大图，MIME 按文件头判断。"""
+        product_json = dump_ai_product_json(product_data)
         limits = self._get_limits()
         selected_paths = list(image_paths or [])
         if len(selected_paths) > limits.max_images_per_item:
