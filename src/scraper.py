@@ -510,6 +510,118 @@ def _build_extra_headers(raw_headers: Optional[dict]) -> dict:
     return headers
 
 
+# 卖家主页滚动加载：每次滚动后最多等这么久"新一页到了"；新页一到就立刻继续滚
+PROFILE_SCROLL_PAGE_TIMEOUT_SECONDS = 8
+# 风控弹窗检测总等待；广告弹窗"出现就点"的最长等待
+RISK_CONTROL_OVERLAY_TIMEOUT_MS = 2000
+AD_POPUP_CLOSE_TIMEOUT_MS = 1500
+
+
+async def _scroll_until_exhausted(
+    page,
+    *,
+    stop_event: asyncio.Event,
+    page_arrived: asyncio.Event,
+    label: str,
+    timeout_seconds: Optional[float] = None,
+) -> None:
+    """滚到底部触发下一页，等到"新一页响应到了"就马上再滚。
+
+    之前等的是 ``stop_event``（没有下一页才会 set），``nextPage=true`` 时每页都要等满超时，
+    多页卖家一次采集要一两分钟。现在只在真正没有下一页或超时没新页时退出。
+    """
+    if timeout_seconds is None:
+        timeout_seconds = PROFILE_SCROLL_PAGE_TIMEOUT_SECONDS
+    while not stop_event.is_set():
+        page_arrived.clear()
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        try:
+            await asyncio.wait_for(page_arrived.wait(), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            print(f"      [滚动超时] {label}可能已加载完毕。")
+            break
+
+
+async def _detect_risk_control_overlay(page) -> Optional[str]:
+    """两种风控弹窗合并成一个 locator 检测，总等待不超过 2 秒；返回命中的标识或 None。"""
+    baxia_dialog = page.locator("div.baxia-dialog-mask")
+    middleware_widget = page.locator("div.J_MIDDLEWARE_FRAME_WIDGET")
+    block_overlay = baxia_dialog.or_(middleware_widget).filter(visible=True).first
+    try:
+        await block_overlay.wait_for(
+            state="visible", timeout=RISK_CONTROL_OVERLAY_TIMEOUT_MS
+        )
+    except PlaywrightTimeoutError:
+        return None
+    try:
+        if await baxia_dialog.first.is_visible():
+            return "baxia-dialog"
+    except Exception:
+        pass
+    return "J_MIDDLEWARE_FRAME_WIDGET"
+
+
+def _print_risk_control_banner(marker: str, keyword: str) -> None:
+    print("\n==================== CRITICAL BLOCK DETECTED ====================")
+    print(f"检测到闲鱼反爬虫验证弹窗 ({marker})，无法继续操作。")
+    print("这通常是因为操作过于频繁或被识别为机器人。")
+    print("建议：")
+    print("1. 停止脚本一段时间再试。")
+    print("2. (推荐) 在 .env 文件中设置 RUN_HEADLESS=false，以非无头模式运行，这有助于绕过检测。")
+    print("3. 更新登录状态文件，确保登录状态有效；并降低任务执行频率。")
+    print(f"任务 '{keyword}' 将在此处中止。")
+    print("===================================================================")
+
+
+async def _close_ad_popup(page) -> bool:
+    """广告弹窗的关闭按钮出现就点，最多等 1.5 秒；没有就直接继续。"""
+    close_icon = page.locator("div[class*='closeIconBg']").first
+    try:
+        await close_icon.wait_for(state="visible", timeout=AD_POPUP_CLOSE_TIMEOUT_MS)
+        await close_icon.click(timeout=AD_POPUP_CLOSE_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        print("LOG: 未检测到广告弹窗。")
+        return False
+    except Exception as exc:
+        print(f"LOG: 关闭广告弹窗失败（忽略）: {exc}")
+        return False
+    print("LOG: 已关闭广告弹窗。")
+    return True
+
+
+async def _join_analysis_dispatcher(dispatcher, *, max_rounds: int) -> list:
+    """等后台分析任务全部结束；某个任务抛异常时只记日志，继续等其余任务。
+
+    ``dispatcher.join()`` 内部是 ``gather(*tasks)``：任一任务抛异常就整体抛出，其余任务还在跑，
+    异常再从 finally 冒出去会跳过 ``browser.close()``。这里每抓到一个异常就再 join 一轮
+    （抛过的任务已从在途集合里移除），轮数以已提交的任务数为上限。
+    """
+    errors: list = []
+    for _ in range(max(1, max_rounds)):
+        try:
+            await dispatcher.join()
+            return errors
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            errors.append(exc)
+            log_time(f"[后台分析] 一个分析任务异常退出（已记录，继续等待其余任务）: {exc!r}")
+    log_time(f"[后台分析] 已有 {len(errors)} 个任务异常，达到上限，不再等待剩余任务。")
+    return errors
+
+
+async def _cancel_analysis_dispatcher(dispatcher) -> int:
+    """任务被取消时不再等全部分析完成，直接取消在途任务。"""
+    try:
+        cancelled = await dispatcher.cancel_all()
+    except Exception as exc:
+        log_time(f"取消后台分析任务时出错（忽略）: {exc!r}")
+        return 0
+    if cancelled:
+        log_time(f"已取消 {cancelled} 个在途的后台分析任务。")
+    return cancelled
+
+
 async def scrape_user_profile(context, user_id: str) -> dict:
     """
     【新版】访问指定用户的个人主页，按顺序采集其摘要信息、完整的商品列表和完整的评价列表。
@@ -523,6 +635,9 @@ async def scrape_user_profile(context, user_id: str) -> dict:
 
     all_items, all_ratings = [], []
     stop_item_scrolling, stop_rating_scrolling = asyncio.Event(), asyncio.Event()
+    # 每收到一页列表响应就 set 一次：滚动后只等"新一页到了"，不用每页都把超时等满。
+    # 这些 Event 和 page.on 回调都在当前运行的 loop 上创建/触发。
+    item_page_arrived, rating_page_arrived = asyncio.Event(), asyncio.Event()
 
     async def handle_response(response: Response):
         # 捕获头部摘要API
@@ -547,6 +662,8 @@ async def scrape_user_profile(context, user_id: str) -> dict:
                     stop_item_scrolling.set()
             except Exception as e:
                 stop_item_scrolling.set()
+            finally:
+                item_page_arrived.set()
 
         # 捕获评价列表API
         elif "mtop.idle.web.trade.rate.list" in response.url:
@@ -558,6 +675,8 @@ async def scrape_user_profile(context, user_id: str) -> dict:
                     stop_rating_scrolling.set()
             except Exception as e:
                 stop_rating_scrolling.set()
+            finally:
+                rating_page_arrived.set()
 
     page.on("response", handle_response)
 
@@ -574,13 +693,12 @@ async def scrape_user_profile(context, user_id: str) -> dict:
         # --- 任务2: 滚动加载所有商品 (默认页面) ---
         print("      [采集阶段] 开始采集该用户的商品列表...")
         await random_sleep(2, 4)  # 等待第一页商品API完成
-        while not stop_item_scrolling.is_set():
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            try:
-                await asyncio.wait_for(stop_item_scrolling.wait(), timeout=8)
-            except asyncio.TimeoutError:
-                print("      [滚动超时] 商品列表可能已加载完毕。")
-                break
+        await _scroll_until_exhausted(
+            page,
+            stop_event=stop_item_scrolling,
+            page_arrived=item_page_arrived,
+            label="商品列表",
+        )
         profile_data["卖家发布的商品列表"] = await _parse_user_items_data(all_items)
 
         # --- 任务3: 点击并采集所有评价 ---
@@ -590,13 +708,12 @@ async def scrape_user_profile(context, user_id: str) -> dict:
             await rating_tab_locator.click()
             await random_sleep(3, 5)  # 等待第一页评价API完成
 
-            while not stop_rating_scrolling.is_set():
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                try:
-                    await asyncio.wait_for(stop_rating_scrolling.wait(), timeout=8)
-                except asyncio.TimeoutError:
-                    print("      [滚动超时] 评价列表可能已加载完毕。")
-                    break
+            await _scroll_until_exhausted(
+                page,
+                stop_event=stop_rating_scrolling,
+                page_arrived=rating_page_arrived,
+                label="评价列表",
+            )
 
             profile_data["卖家收到的评价列表"] = await parse_ratings_data(all_ratings)
             reputation_stats = await calculate_reputation_from_ratings(all_ratings)
@@ -795,6 +912,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
             await context.add_init_script(build_stealth_init_script(context_kwargs))
 
             page = await context.new_page()
+            cancelled = False
 
             try:
                 # 步骤 0 - 模拟真实用户：先访问首页（重要的反检测措施）
@@ -846,60 +964,14 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 log_time("[反爬] 模拟用户查看页面...")
                 await random_sleep(1, 3)
 
-                # --- 新增：检查是否存在验证弹窗 ---
-                baxia_dialog = page.locator("div.baxia-dialog-mask")
-                middleware_widget = page.locator("div.J_MIDDLEWARE_FRAME_WIDGET")
-                try:
-                    # 等待弹窗在2秒内出现。如果出现，则执行块内代码。
-                    await baxia_dialog.wait_for(state="visible", timeout=2000)
-                    print(
-                        "\n==================== CRITICAL BLOCK DETECTED ===================="
-                    )
-                    print("检测到闲鱼反爬虫验证弹窗 (baxia-dialog)，无法继续操作。")
-                    print("这通常是因为操作过于频繁或被识别为机器人。")
-                    print("建议：")
-                    print("1. 停止脚本一段时间再试。")
-                    print(
-                        "2. (推荐) 在 .env 文件中设置 RUN_HEADLESS=false，以非无头模式运行，这有助于绕过检测。"
-                    )
-                    print(f"任务 '{keyword}' 将在此处中止。")
-                    print(
-                        "==================================================================="
-                    )
-                    raise RiskControlError("baxia-dialog")
-                except PlaywrightTimeoutError:
-                    # 2秒内弹窗未出现，这是正常情况，继续执行
-                    pass
+                # --- 检查是否存在验证弹窗：baxia 验证框和 middleware 框合并检测，总等待不超过 2 秒 ---
+                risk_marker = await _detect_risk_control_overlay(page)
+                if risk_marker:
+                    _print_risk_control_banner(risk_marker, keyword)
+                    raise RiskControlError(risk_marker)
 
-                # 检查是否有J_MIDDLEWARE_FRAME_WIDGET覆盖层
-                try:
-                    await middleware_widget.wait_for(state="visible", timeout=2000)
-                    print(
-                        "\n==================== CRITICAL BLOCK DETECTED ===================="
-                    )
-                    print(
-                        "检测到闲鱼反爬虫验证弹窗 (J_MIDDLEWARE_FRAME_WIDGET)，无法继续操作。"
-                    )
-                    print("这通常是因为操作过于频繁或被识别为机器人。")
-                    print("建议：")
-                    print("1. 停止脚本一段时间再试。")
-                    print("2. (推荐) 更新登录状态文件，确保登录状态有效。")
-                    print("3. 降低任务执行频率，避免被识别为机器人。")
-                    print(f"任务 '{keyword}' 将在此处中止。")
-                    print(
-                        "==================================================================="
-                    )
-                    raise RiskControlError("J_MIDDLEWARE_FRAME_WIDGET")
-                except PlaywrightTimeoutError:
-                    # 2秒内弹窗未出现，这是正常情况，继续执行
-                    pass
-                # --- 结束新增 ---
-
-                try:
-                    await page.click("div[class*='closeIconBg']", timeout=3000)
-                    print("LOG: 已关闭广告弹窗。")
-                except PlaywrightTimeoutError:
-                    print("LOG: 未检测到广告弹窗。")
+                # 广告弹窗：关闭按钮出现就点，最多等 1.5 秒
+                await _close_ad_popup(page)
 
                 final_response = None
                 log_time("步骤 2 - 应用筛选条件...")
@@ -1408,6 +1480,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 print(f"\n操作超时错误: 页面元素或网络响应未在规定时间内出现。\n{e}")
                 raise
             except asyncio.CancelledError:
+                cancelled = True
                 log_time("收到取消信号，正在终止当前爬虫任务...")
                 raise
             except (RiskControlError, LoginRequiredError):
@@ -1423,16 +1496,36 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 print(f"\n爬取过程中发生未知错误: {e}")
                 raise
             finally:
-                if analysis_dispatcher is not None:
-                    log_time("等待后台分析任务完成...")
-                    await analysis_dispatcher.join()
-                if title_filtered_count:
-                    log_time(f"标题预筛选跳过了 {title_filtered_count} 个商品。")
-                log_time("任务执行完毕，浏览器将在5秒后自动关闭...")
-                await asyncio.sleep(5)
-                if debug_limit and sys.stdin.isatty():
-                    input("按回车键关闭浏览器...")
-                await browser.close()
+                try:
+                    if analysis_dispatcher is not None:
+                        if cancelled:
+                            # 被取消时不再等全部 AI 分析跑完，直接取消在途任务
+                            await _cancel_analysis_dispatcher(analysis_dispatcher)
+                        else:
+                            log_time("等待后台分析任务完成...")
+                            await _join_analysis_dispatcher(
+                                analysis_dispatcher,
+                                max_rounds=processed_item_count + 1,
+                            )
+                except asyncio.CancelledError:
+                    # 等待期间才收到取消：取消在途分析后继续往下关浏览器，取消信号随后继续上抛
+                    if analysis_dispatcher is not None:
+                        await _cancel_analysis_dispatcher(analysis_dispatcher)
+                    raise
+                finally:
+                    if title_filtered_count:
+                        log_time(f"标题预筛选跳过了 {title_filtered_count} 个商品。")
+                    if debug_limit:
+                        log_time("调试模式：任务执行完毕，浏览器将在5秒后自动关闭...")
+                        await asyncio.sleep(5)
+                        if sys.stdin.isatty():
+                            input("按回车键关闭浏览器...")
+                    else:
+                        log_time("任务执行完毕，正在关闭浏览器...")
+                    try:
+                        await browser.close()
+                    except Exception as exc:
+                        log_time(f"关闭浏览器时出错（忽略）: {exc}")
 
         return processed_item_count
 
