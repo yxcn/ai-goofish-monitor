@@ -194,6 +194,47 @@ def test_personal_archive_shows_up_in_summary_and_identity():
     assert "个人档案：性别暂无 · 00后" in build_seller_profile(record, now=NOW)["身份"]
 
 
+def test_incomplete_profile_is_not_mistaken_for_a_newcomer():
+    # 主页显示 197 条评价、8 件商品，但列表没采到（翻页超时）→ 不能当新人，也不能说零评价
+    record = _thin_personal_seller_record()
+    record["卖家信息"].update({"卖家收到的评价总数": "197", "卖家在售/已售商品数": 8, "卖家收到的评价列表": [], "卖家发布的商品列表": []})
+    profile = build_seller_profile(record, now=NOW)
+
+    assert profile["新人卖家"] is False
+    assert "⚠️ 卖家资料未采全" in profile["信号"] and "⚠️ 卖家零评价" not in profile["信号"]
+    assert profile["历史"] == "评价列表未采集（主页显示 197 条评价） · 商品列表未采集（主页显示 8 件）"
+    assert profile["口碑"].startswith("评价列表未采集（主页显示 197 条）")
+    assert "卖家资料未采全，口碑待下次抓取补齐" in profile["结论"]
+
+
+def test_district_level_region_is_not_an_ip_mismatch():
+    record = _thin_personal_seller_record()
+    record["商品信息"].update({"发货地区": "海淀区", "卖家所在城市": ""})
+    record["卖家信息"]["卖家IP属地"] = "北京市"
+    profile = build_seller_profile(record, now=NOW)
+    assert not any("不一致" in s for s in profile["信号"]) and not any("一致" in s for s in profile["信号"])
+    assert profile["摘要"] == "x***7（海淀区 · IP 属地北京市）"
+
+    record["商品信息"].update({"发货地区": "北京", "卖家所在城市": "海淀区"})
+    assert "✅ IP 属地与发货地一致" in build_seller_profile(record, now=NOW)["信号"]
+
+
+def test_old_ratings_without_derived_role_fall_back_to_rater_tag():
+    # 早期记录只有“评价来源角色”：40 条来自买家的评价 = 该用户卖过 40 次，绝不是新人
+    record = _thin_personal_seller_record()
+    record["卖家信息"]["卖家收到的评价总数"] = 197
+    record["卖家信息"]["卖家收到的评价列表"] = [
+        {"评价来源角色": "买家", "评价类型": "好评", "评价时间": f"2026-10-{day:02d} 10:00:00"} for day in range(1, 31)
+    ] + [{"评价来源角色": "卖家", "评价类型": "好评", "评价时间": "2026-09-01 10:00:00"}] * 10
+    profile = build_seller_profile(record, now=NOW)
+
+    assert profile["新人卖家"] is False
+    assert profile["指标"]["卖家评价数"] == 30 and profile["指标"]["买家评价数"] == 10
+    assert "已采集 40/197 条" in profile["口碑"]
+    assert "⚠️ 卖家零评价" not in profile["信号"]
+    assert "✅ 卖家好评率 100%（30 条）" in profile["信号"]
+
+
 def test_newcomer_needs_a_clean_history_not_just_a_young_account():
     record = _thin_personal_seller_record()
     record["卖家信息"]["卖家收到的评价列表"] = [_rating("买家", "2026-10-01"), _rating("买家", "2026-10-02")]

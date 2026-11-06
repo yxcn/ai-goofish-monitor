@@ -86,8 +86,8 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
     similar_sold = [x for x in sold if _is_similar(x, category_id, tokens, category_label)]
     this_entry = next((x for x in items if str(x.get("商品ID") or "") == this_id), None)
 
-    seller_ratings = [r for r in ratings if r.get("该用户在此交易中的角色") == "卖家"]
-    buyer_ratings = [r for r in ratings if r.get("该用户在此交易中的角色") == "买家"]
+    seller_ratings = [r for r in ratings if _user_role(r) == "卖家"]
+    buyer_ratings = [r for r in ratings if _user_role(r) == "买家"]
     seller_positive = sum(1 for r in seller_ratings if r.get("评价类型") == "好评")
     seller_negative = sum(1 for r in seller_ratings if r.get("评价类型") == "差评")
     seller_dates = sorted(d for d in (_rating_date(r.get("评价时间")) for r in seller_ratings) if d)
@@ -98,6 +98,11 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
     sold_total = _count(seller.get("卖家卖出件数"))
     reg_days = _count(seller.get("卖家注册天数"))
     followers = _count(seller.get("卖家粉丝数"))
+    # 主页头部给的总数；列表为空但总数不为零，说明列表没采到（翻页超时、风控），不能当成“干净”
+    rating_total = _count(seller.get("卖家收到的评价总数"))
+    item_total = _count(seller.get("卖家在售/已售商品数"))
+    ratings_missing = not ratings and bool(rating_total)
+    items_missing = not items and bool(item_total)
     # 闲鱼标注的经营资质（持证经营 / 个人经营者）：平台自己认定的经营账号，比任何行为推断都硬
     business = _clean(seller.get("卖家经营资质"), {"无"})
 
@@ -110,6 +115,8 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
     newcomer = (
         has_profile
         and not business
+        and not ratings_missing
+        and not items_missing
         and not seller_ratings
         and not sold
         and (sold_total or 0) == 0
@@ -188,7 +195,9 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
         signals.append(f"⚠️ 新号（注册 {reg_days} 天）")
     if newcomer:
         signals.append("⚠️ 新人卖家（无出售记录）")
-    if has_profile and not seller_ratings:
+    if ratings_missing or items_missing:
+        signals.append("⚠️ 卖家资料未采全")
+    elif has_profile and not seller_ratings:
         signals.append("⚠️ 卖家零评价")
     if seller_negative:
         signals.append(f"⚠️ 有 {seller_negative} 条差评")
@@ -266,8 +275,12 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
         span = _span(seller_dates)
         places = f"，评价者来自 {len(rater_places)} 个省" if len(rater_places) >= 2 else ""
         history_parts.append(f"作为卖家收到 {len(seller_ratings)} 条评价" + (f"（{span}{places}）" if span else ""))
+    elif ratings_missing:
+        history_parts.append(f"评价列表未采集（主页显示 {rating_total} 条评价）")
     elif has_profile:
         history_parts.append("作为卖家没有收到过评价")
+    if items_missing:
+        history_parts.append(f"商品列表未采集（主页显示 {item_total} 件）")
     if buyer_ratings:
         span = _span(buyer_dates)
         history_parts.append(f"作为买家 {len(buyer_ratings)} 条评价" + (f"（{span}）" if span else ""))
@@ -286,6 +299,10 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
         reputation_parts.append(f"作为卖家 {seller_positive}/{len(seller_ratings)} 好评（{rate:.0%}）")
         if seller_negative:
             reputation_parts.append(f"{seller_negative} 条差评")
+        if rating_total and rating_total > len(ratings):
+            reputation_parts.append(f"已采集 {len(ratings)}/{rating_total} 条")
+    elif ratings_missing:
+        reputation_parts.append(f"评价列表未采集（主页显示 {rating_total} 条）")
     elif has_profile:
         reputation_parts.append("作为卖家暂无评价")
     if buyer_ratings:
@@ -303,6 +320,8 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
         conclusion.append(f"注册仅 {reg_days} 天的新号")
     if newcomer:
         conclusion.append("没有任何出售记录，按新人卖家对待，建议验货宝或担保交易")
+    elif ratings_missing or items_missing:
+        conclusion.append("卖家资料未采全，口碑待下次抓取补齐")
     elif has_profile and not seller_ratings:
         conclusion.append("无卖家口碑，建议验货宝或担保交易")
     elif seller_negative:
@@ -345,6 +364,19 @@ def build_seller_profile(record: dict, now: Optional[datetime] = None) -> dict:
             "粉丝数": followers,
         },
     }
+
+
+def _user_role(rating: dict) -> str:
+    """该用户在这笔交易里的角色。老记录没有派生字段时，从“评价来源角色”反推：写评价的是卖家 → 该用户是买家。"""
+    role = str(rating.get("该用户在此交易中的角色") or "").strip()
+    if role in ("卖家", "买家"):
+        return role
+    rater = str(rating.get("评价来源角色") or "")
+    if "卖家" in rater:
+        return "买家"
+    if "买家" in rater:
+        return "卖家"
+    return "未知"
 
 
 def _is_similar(entry: dict, category_id, tokens: tuple[str, ...], category_label: str) -> bool:
@@ -414,10 +446,18 @@ def _place(value) -> str:
     return text.strip()
 
 
-def _places_match(ip_location: str, region: str, city: str) -> bool:
+def _places_match(ip_location: str, region: str, city: str) -> Optional[bool]:
+    """IP 属地和发货地是否一致；发货地只有区/县（如“海淀区”）时和省级 IP 属地比不出来，返回 None。"""
     ip = _place(ip_location)
-    candidates = [p for p in (_place(region), _place(city)) if p]
-    return any(ip in c or c in ip for c in candidates) if ip and candidates else True
+    raw_candidates = [p for p in ((region or "").strip(), (city or "").strip()) if p]
+    candidates = [_place(p) for p in raw_candidates]
+    if not ip or not candidates:
+        return None
+    if any(ip in c or c in ip for c in candidates if c):
+        return True
+    if all(p.endswith(("区", "县", "镇")) for p in raw_candidates):
+        return None
+    return False
 
 
 def _join_place(region: str, city: str) -> str:
