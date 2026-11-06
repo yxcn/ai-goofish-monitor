@@ -2,6 +2,7 @@
 任务领域模型
 定义任务实体及其业务逻辑
 """
+import os
 import re
 from enum import Enum
 from typing import Any, List, Literal, Optional
@@ -66,15 +67,25 @@ def _extract_keywords_from_legacy_groups(groups) -> List[str]:
     return _normalize_keyword_values(merged)
 
 
-def _normalize_payload_keywords(payload: Any) -> Any:
+def _normalize_payload_keywords(payload: Any, *, partial: bool = False) -> Any:
+    """归一化账号字段和旧版关键词分组。
+
+    partial=True 用于 TaskUpdate：只在请求里带了账号字段时才归一化，
+    否则 pydantic 会把这两个字段算作"已设置"，任何局部更新（包括每次启动/结束写 is_running）
+    都会把任务的账号绑定抹成 auto/None。
+    """
     if payload is None or not isinstance(payload, dict):
         return payload
     values = dict(payload)
-    values["account_state_file"] = clean_account_state_file(values.get("account_state_file"))
-    values["account_strategy"] = normalize_account_strategy(
-        values.get("account_strategy"),
-        values.get("account_state_file"),
-    )
+    has_state_file = "account_state_file" in values
+    has_strategy = "account_strategy" in values
+    if not partial or has_state_file:
+        values["account_state_file"] = clean_account_state_file(values.get("account_state_file"))
+    if not partial or has_strategy:
+        values["account_strategy"] = normalize_account_strategy(
+            values.get("account_strategy"),
+            values.get("account_state_file"),
+        )
     if "keyword_rules" in values:
         values["keyword_rules"] = _normalize_keyword_values(values.get("keyword_rules"))
     elif "keyword_rule_groups" in values:
@@ -104,6 +115,42 @@ def _normalize_price_value(value):
     if isinstance(value, (int, float)):
         return str(value)
     return value
+
+
+PROMPT_FILE_DIR = "prompts"
+
+
+def _validate_project_relative_file(value, *, field_label: str, allowed_dir: Optional[str] = None,
+                                    required_suffix: Optional[str] = None):
+    """任务里的文件路径只接受项目内的相对路径。
+
+    这些字段会被 spider_v2 直接 open() 并把内容拼进发给 AI 的 prompt，
+    或者被 Playwright 当作登录态加载；放开绝对路径和 `..` 等于任意文件读取。
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return text
+    normalized = text.replace("\\", "/")
+    if os.path.isabs(normalized) or normalized.startswith("~") or re.match(r"^[A-Za-z]:", normalized):
+        raise ValueError(f"{field_label} 只能是项目内的相对路径，不接受绝对路径：{value}")
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    if not parts or ".." in parts:
+        raise ValueError(f"{field_label} 不能包含 '..'：{value}")
+    if allowed_dir and parts[0] != allowed_dir:
+        raise ValueError(f"{field_label} 必须位于 {allowed_dir}/ 目录下：{value}")
+    if required_suffix and not parts[-1].lower().endswith(required_suffix):
+        raise ValueError(f"{field_label} 必须是 {required_suffix} 文件：{value}")
+    return "/".join(parts)
+
+
+def _validate_prompt_file(value):
+    return _validate_project_relative_file(value, field_label="Prompt 文件", allowed_dir=PROMPT_FILE_DIR)
+
+
+def _validate_account_state_file(value):
+    return _validate_project_relative_file(value, field_label="登录态文件", required_suffix=".json")
 
 
 class Task(BaseModel):
@@ -144,6 +191,16 @@ class Task(BaseModel):
     @classmethod
     def normalize_legacy_keyword_payload(cls, values):
         return _normalize_payload_keywords(values)
+
+    @field_validator("ai_prompt_base_file", "ai_prompt_criteria_file", mode="before")
+    @classmethod
+    def validate_prompt_file_paths(cls, value):
+        return _validate_prompt_file(value)
+
+    @field_validator("account_state_file", mode="before")
+    @classmethod
+    def validate_account_state_file_path(cls, value):
+        return _validate_account_state_file(value)
 
     @field_validator("keyword_rules", mode="before")
     @classmethod
@@ -207,6 +264,16 @@ class TaskCreate(BaseModel):
     @classmethod
     def normalize_legacy_keyword_payload(cls, values):
         return _normalize_payload_keywords(values)
+
+    @field_validator("ai_prompt_base_file", "ai_prompt_criteria_file", mode="before")
+    @classmethod
+    def validate_prompt_file_paths(cls, value):
+        return _validate_prompt_file(value)
+
+    @field_validator("account_state_file", mode="before")
+    @classmethod
+    def validate_account_state_file_path(cls, value):
+        return _validate_account_state_file(value)
 
     @field_validator("min_price", "max_price", mode="before")
     @classmethod
@@ -288,7 +355,17 @@ class TaskUpdate(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def normalize_legacy_keyword_payload(cls, values):
-        return _normalize_payload_keywords(values)
+        return _normalize_payload_keywords(values, partial=True)
+
+    @field_validator("ai_prompt_base_file", "ai_prompt_criteria_file", mode="before")
+    @classmethod
+    def validate_prompt_file_paths(cls, value):
+        return _validate_prompt_file(value)
+
+    @field_validator("account_state_file", mode="before")
+    @classmethod
+    def validate_account_state_file_path(cls, value):
+        return _validate_account_state_file(value)
 
     @field_validator("min_price", "max_price", mode="before")
     @classmethod
@@ -371,6 +448,11 @@ class TaskGenerateRequest(BaseModel):
     @classmethod
     def normalize_legacy_keyword_payload(cls, values):
         return _normalize_payload_keywords(values)
+
+    @field_validator("account_state_file", mode="before")
+    @classmethod
+    def validate_account_state_file_path(cls, value):
+        return _validate_account_state_file(value)
 
     @field_validator("min_price", "max_price", mode="before")
     @classmethod
