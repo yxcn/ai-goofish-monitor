@@ -51,4 +51,6 @@ def test_save_to_jsonl(tmp_path, monkeypatch):
             sort_order="asc",
         )
     )
-    assert records == [record]
+    # 读取时会附加 _status / _hidden_reason 等可见性字段，比较时去掉
+    stored = [{k: v for k, v in r.items() if not k.startswith("_")} for r in records]
+    assert stored == [record]
