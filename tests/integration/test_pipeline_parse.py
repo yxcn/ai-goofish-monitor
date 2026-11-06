@@ -39,6 +39,10 @@ def test_parse_ratings_and_reputation(load_json_fixture):
     ratings = asyncio.run(parse_ratings_data(ratings_json))
     assert ratings[0]["评价类型"] == "好评"
 
+    # 角色标签是写评价的人的角色：两条来自卖家的评价 = 该用户买过两次（一好评一中评），
+    # 一条来自买家的评价 = 该用户卖过一次
+    assert [item["该用户在此交易中的角色"] for item in ratings] == ["买家", "卖家", "买家"]
+
     reputation = asyncio.run(calculate_reputation_from_ratings(ratings_json))
-    assert reputation["作为卖家的好评数"].startswith("1/")
-    assert reputation["作为买家的好评数"].startswith("1/")
+    assert reputation["作为卖家的好评数"] == "1/1"
+    assert reputation["作为买家的好评数"] == "1/2"

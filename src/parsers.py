@@ -106,8 +106,21 @@ def parse_item_detail_extras(item_do: dict) -> dict:
     return extras
 
 
+# 评价列表里的 rateTagList 标的是“写评价的人”的角色：
+# 标签为“卖家”的评价是别人卖东西给该用户后留下的（内容多为“很好的买家”），
+# 说明该用户在那笔交易里是买家；标签为“买家”则说明该用户是卖家。
+RATER_ROLE_TO_USER_ROLE = {"卖家": "买家", "买家": "卖家"}
+
+
+def _user_role_from_rater_tag(role_tag: str) -> str:
+    for rater_role, user_role in RATER_ROLE_TO_USER_ROLE.items():
+        if rater_role in (role_tag or ""):
+            return user_role
+    return "未知"
+
+
 async def calculate_reputation_from_ratings(ratings_json: list) -> dict:
-    """从原始评价API数据列表中，计算作为卖家和买家的好评数与好评率。"""
+    """从原始评价API数据列表中，计算该用户作为卖家和作为买家的好评数与好评率。"""
     seller_total = 0
     seller_positive = 0
     buyer_total = 0
@@ -119,11 +132,12 @@ async def calculate_reputation_from_ratings(ratings_json: list) -> dict:
         role_tag = await safe_get(data, 'rateTagList', 0, 'text', default='')
         rate_type = await safe_get(data, 'rate') # 1=好评, 0=中评, -1=差评
 
-        if "卖家" in role_tag:
+        user_role = _user_role_from_rater_tag(role_tag)
+        if user_role == "卖家":
             seller_total += 1
             if rate_type == 1:
                 seller_positive += 1
-        elif "买家" in role_tag:
+        elif user_role == "买家":
             buyer_total += 1
             if rate_type == 1:
                 buyer_positive += 1
@@ -200,6 +214,7 @@ async def parse_ratings_data(ratings_json: list) -> list:
             "评价内容": data.get('feedback'),
             "评价类型": rate_text,
             "评价来源角色": rate_tag,
+            "该用户在此交易中的角色": _user_role_from_rater_tag(rate_tag),
             "评价者昵称": data.get('raterUserNick'),
             "评价时间": data.get('gmtCreate'),
             "评价图片": await safe_get(data, 'pictCdnUrlList', default=[])

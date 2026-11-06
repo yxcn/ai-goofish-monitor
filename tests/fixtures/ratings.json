@@ -2,10 +2,10 @@
   {
     "cardData": {
       "rateId": "r1",
-      "feedback": "Great seller",
+      "feedback": "Nice buyer, paid quickly",
       "rate": 1,
-      "rateTagList": [{"text": "\u5356\u5bb6"}],
-      "raterUserNick": "buyer_01",
+      "rateTagList": [{"text": "卖家"}],
+      "raterUserNick": "seller_01",
       "gmtCreate": "2024-01-01",
       "pictCdnUrlList": []
     }
@@ -13,10 +13,10 @@
   {
     "cardData": {
       "rateId": "r2",
-      "feedback": "Nice buyer",
+      "feedback": "Great seller, item as described",
       "rate": 1,
-      "rateTagList": [{"text": "\u4e70\u5bb6"}],
-      "raterUserNick": "seller_02",
+      "rateTagList": [{"text": "买家"}],
+      "raterUserNick": "buyer_02",
       "gmtCreate": "2024-02-01",
       "pictCdnUrlList": ["https://img.example.com/pic.jpg"]
     }
@@ -26,8 +26,8 @@
       "rateId": "r3",
       "feedback": "Average",
       "rate": 0,
-      "rateTagList": [{"text": "\u5356\u5bb6"}],
-      "raterUserNick": "buyer_02",
+      "rateTagList": [{"text": "卖家"}],
+      "raterUserNick": "seller_02",
       "gmtCreate": "2024-03-01",
       "pictCdnUrlList": []
     }
