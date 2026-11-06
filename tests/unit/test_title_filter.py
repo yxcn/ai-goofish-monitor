@@ -1,4 +1,25 @@
-from src.title_filter import normalize_title_keywords, title_matches_keywords
+from src.title_filter import (
+    filter_items_by_title,
+    normalize_title_keywords,
+    title_matches_keywords,
+)
+
+
+def test_filter_items_by_title_keeps_only_matching_items_for_price_stats():
+    page = [
+        {"商品标题": "ThinkPad T14 Gen1 锐龙", "当前售价": "¥1200"},
+        {"商品标题": "华为P50 Pro 8+256G", "当前售价": "¥900"},
+        {"商品标题": "thinkpad t14 gen2", "当前售价": "¥1800"},
+        {"当前售价": "¥700"},
+    ]
+    kept = filter_items_by_title(page, ["T14"])
+    assert [item["当前售价"] for item in kept] == ["¥1200", "¥1800"]
+
+
+def test_filter_items_by_title_is_passthrough_without_keywords():
+    page = [{"商品标题": "华为P50 Pro"}, {"商品标题": "ThinkPad T14"}]
+    assert filter_items_by_title(page, []) == page
+    assert filter_items_by_title(iter(page), None) == page
 
 
 def test_no_keywords_means_everything_passes():

@@ -60,7 +60,11 @@ from src.services.price_history_service import (
 )
 from src.services.result_storage_service import load_processed_link_keys
 from src.services.seller_profile_cache import SellerProfileCache
-from src.title_filter import normalize_title_keywords, title_matches_keywords
+from src.title_filter import (
+    filter_items_by_title,
+    normalize_title_keywords,
+    title_matches_keywords,
+)
 from src.services.search_pagination import (
     advance_search_page,
     is_search_results_response,
@@ -1001,11 +1005,19 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                     )
                     if not basic_items:
                         break
+                    # 价格快照和市场参考只统计通过标题预筛选的商品，
+                    # 否则搜不到结果时闲鱼塞进来的推荐手机会把均价和性价比评分带偏
+                    market_items = filter_items_by_title(basic_items, title_include_keywords)
+                    if len(market_items) != len(basic_items):
+                        log_time(
+                            f"第 {page_num} 页 {len(basic_items)} 个商品中有 {len(market_items)} 个标题含 "
+                            f"{'/'.join(title_include_keywords)}，只有这些计入价格统计。"
+                        )
                     historical_snapshots.extend(
                         record_market_snapshots(
                             keyword=keyword,
                             task_name=task_config.get("task_name", "Untitled Task"),
-                            items=basic_items,
+                            items=market_items,
                             run_id=history_run_id,
                             snapshot_time=datetime.now().isoformat(),
                             seen_item_ids=history_seen_item_ids,
@@ -1150,7 +1162,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                 price_reference = build_market_reference(
                                     keyword=keyword,
                                     item=item_data,
-                                    current_market_items=basic_items,
+                                    current_market_items=market_items,
                                     historical_snapshots=historical_snapshots,
                                 )
                                 final_record["价格参考"] = price_reference

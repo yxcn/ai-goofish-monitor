@@ -42,6 +42,27 @@ def normalize_title_keywords(values: Iterable[str] | str | None) -> List[str]:
     return normalized
 
 
+def filter_items_by_title(
+    items: Iterable[dict],
+    keywords: Iterable[str] | str | None,
+    title_key: str = "商品标题",
+) -> List[dict]:
+    """只保留标题通过预筛选的商品；没有配置关键词时原样返回。
+
+    价格快照和市场参考也要走这一步，否则闲鱼在搜不到结果时塞进来的
+    推荐商品（往往是手机）会把均价、中位数和性价比评分全部带偏。
+    """
+    normalized_keywords = normalize_title_keywords(keywords)
+    item_list = list(items)
+    if not normalized_keywords:
+        return item_list
+    return [
+        item
+        for item in item_list
+        if title_matches_keywords(str(item.get(title_key) or ""), normalized_keywords)
+    ]
+
+
 def title_matches_keywords(title: str, keywords: Iterable[str] | str | None) -> bool:
     """标题包含任一关键词即通过；没有配置关键词时一律通过。
 
