@@ -124,6 +124,11 @@ const enUSExtra = {
         keywordRuleRequired: 'At least one keyword is required in keyword mode.',
         accountStrategyIncomplete: 'Incomplete account strategy',
         fixedAccountRequired: 'A fixed account must be selected in fixed mode.',
+        cronInvalid: 'Invalid schedule',
+        cronInvalidHint: 'Enter a 5- or 6-part cron expression (each part may only contain digits and * / , - ? L W #), or one of {\'@\'}hourly / {\'@\'}daily / {\'@\'}weekly / {\'@\'}monthly / {\'@\'}yearly.',
+        priceInvalid: 'Invalid price range',
+        priceNonNegative: 'Min and max price must be numbers no less than 0.',
+        priceRangeInverted: 'Min price cannot be greater than max price.',
       },
     },
     region: {

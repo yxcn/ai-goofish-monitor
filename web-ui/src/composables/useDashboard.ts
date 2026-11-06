@@ -114,7 +114,18 @@ export function useDashboard() {
 
   on('tasks_updated', fetchSummary)
   on('results_updated', fetchSummary)
-  on('task_status_changed', fetchSummary)
+  // The only event the backend actually broadcasts. When a task stops, its result
+  // file may have grown: refresh the overview and, if the focus file is unchanged
+  // (the watcher above handles a changed one), its insights too.
+  on('task_status_changed', async (data: { id: number; is_running: boolean } | undefined) => {
+    const previousFocusFile = focusTask.value?.filename
+    await fetchSummary()
+    if (data?.is_running) return
+    const nextFocusFile = focusTask.value?.filename
+    if (nextFocusFile && nextFocusFile === previousFocusFile) {
+      fetchFocusInsights(nextFocusFile)
+    }
+  })
 
   fetchSummary()
 

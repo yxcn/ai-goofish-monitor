@@ -124,6 +124,11 @@ const zhCNExtra = {
         keywordRuleRequired: '关键词模式下至少需要一个关键词。',
         accountStrategyIncomplete: '账号策略不完整',
         fixedAccountRequired: '固定账号模式下必须选择一个账号。',
+        cronInvalid: '定时规则无效',
+        cronInvalidHint: '请输入 5 段或 6 段 cron 表达式（每段只能包含数字和 * / , - ? L W #），或使用 {\'@\'}hourly / {\'@\'}daily / {\'@\'}weekly / {\'@\'}monthly / {\'@\'}yearly。',
+        priceInvalid: '价格范围无效',
+        priceNonNegative: '最低价和最高价必须是不小于 0 的数字。',
+        priceRangeInverted: '最低价不能大于最高价。',
       },
     },
     region: {

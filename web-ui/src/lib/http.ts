@@ -4,6 +4,41 @@ interface FetchOptions extends RequestInit {
   params?: Record<string, string | number | boolean | undefined>;
 }
 
+/**
+ * Turn a FastAPI error `detail` into a readable message.
+ * - string: as is
+ * - array (422 validation errors): `loc.join('.')：msg` per item, joined by `；`
+ * - object: JSON
+ */
+function formatErrorDetail(detail: unknown, status: number): string {
+  const fallback = `HTTP error! status: ${status}`
+  if (typeof detail === 'string') {
+    return detail || fallback
+  }
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((item) => {
+        if (item && typeof item === 'object') {
+          const record = item as Record<string, unknown>
+          const msg = typeof record.msg === 'string' ? record.msg : JSON.stringify(record)
+          const loc = Array.isArray(record.loc) ? record.loc.map(String).join('.') : ''
+          return loc ? `${loc}：${msg}` : msg
+        }
+        return item === undefined || item === null ? '' : String(item)
+      })
+      .filter((part) => part.length > 0)
+    return parts.length ? parts.join('；') : fallback
+  }
+  if (detail && typeof detail === 'object') {
+    try {
+      return JSON.stringify(detail)
+    } catch {
+      return fallback
+    }
+  }
+  return fallback
+}
+
 export async function http(url: string, options: FetchOptions = {}) {
   const { logout } = useAuth()
   
@@ -42,7 +77,7 @@ export async function http(url: string, options: FetchOptions = {}) {
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `HTTP error! status: ${response.status}`)
+    throw new Error(formatErrorDetail(errorData?.detail, response.status))
   }
 
   // Handle 204 No Content

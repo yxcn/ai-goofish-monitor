@@ -66,6 +66,44 @@ function isPresetCronValue(value: string): boolean {
 // 判断当前 cron 是否为预设值
 const isPresetCron = computed(() => isPresetCronValue(form.value.cron))
 
+// 本地 cron 预检，与后端 src/core/cron_utils.py 的规则对齐：
+// 空、别名、或 5/6 段（每段只允许 0-9 * / , - ? L W #）通过，其它交给后端做精确校验。
+const CRON_ALIASES = ['@hourly', '@daily', '@midnight', '@weekly', '@monthly', '@yearly', '@annually']
+const CRON_FIELD_PATTERN = /^[0-9*/,\-?LW#]+$/
+function normalizeCronValue(value: unknown): string {
+  return String(value ?? '').trim().replace(/\s+/g, ' ')
+}
+function isValidCronExpression(value: unknown): boolean {
+  const normalized = normalizeCronValue(value)
+  if (!normalized) return true
+  if (CRON_ALIASES.includes(normalized.toLowerCase())) return true
+  const parts = normalized.split(' ')
+  if (parts.length !== 5 && parts.length !== 6) return false
+  return parts.every((part) => CRON_FIELD_PATTERN.test(part))
+}
+const cronError = computed(() =>
+  isValidCronExpression(form.value.cron) ? '' : t('tasks.form.validation.cronInvalidHint')
+)
+
+// 价格区间校验：允许只填一个；填了的必须是非负数，且 最低价 <= 最高价。
+function parsePriceInput(raw: unknown): { value: number | null; invalid: boolean } {
+  if (raw === null || raw === undefined) return { value: null, invalid: false }
+  const text = String(raw).trim()
+  if (!text) return { value: null, invalid: false }
+  const num = Number(text)
+  if (!Number.isFinite(num) || num < 0) return { value: null, invalid: true }
+  return { value: num, invalid: false }
+}
+const priceError = computed(() => {
+  const min = parsePriceInput(form.value.min_price)
+  const max = parsePriceInput(form.value.max_price)
+  if (min.invalid || max.invalid) return t('tasks.form.validation.priceNonNegative')
+  if (min.value !== null && max.value !== null && min.value > max.value) {
+    return t('tasks.form.validation.priceRangeInverted')
+  }
+  return ''
+})
+
 // 预设选择的值
 const presetCronValue = computed({
   get: () => {
@@ -235,6 +273,25 @@ function handleSubmit() {
     return
   }
 
+  if (priceError.value) {
+    toast({
+      title: t('tasks.form.validation.priceInvalid'),
+      description: priceError.value,
+      variant: 'destructive',
+    })
+    return
+  }
+
+  if (cronError.value) {
+    cronMode.value = 'custom' // make sure the inline hint under the input is visible
+    toast({
+      title: t('tasks.form.validation.cronInvalid'),
+      description: cronError.value,
+      variant: 'destructive',
+    })
+    return
+  }
+
   // Filter out fields that shouldn't be sent in update requests
   const { id, is_running, next_run_at, ...submitData } = form.value as any
   const currentAccountStrategy = accountStrategy.value || 'auto'
@@ -265,6 +322,16 @@ function handleSubmit() {
 
   if (submitData.new_publish_option === '__none__') {
     submitData.new_publish_option = ''
+  }
+
+  // Collapse whitespace in the cron expression; empty inputs are sent as null (manual run).
+  if (typeof submitData.cron === 'string') {
+    submitData.cron = normalizeCronValue(submitData.cron) || null
+  }
+  // Empty price inputs (e.g. cleared number fields yield '') are sent as null.
+  for (const field of ['min_price', 'max_price'] as const) {
+    const parsed = parsePriceInput(submitData[field])
+    submitData[field] = parsed.value === null ? null : String(submitData[field]).trim()
   }
 
   submitData.decision_mode = decisionMode
@@ -403,10 +470,27 @@ function handleSubmit() {
 
       <div class="grid gap-2 sm:grid-cols-4 sm:items-center sm:gap-4">
         <Label class="sm:text-right">{{ t('tasks.form.priceRange') }}</Label>
-        <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-2 sm:col-span-3">
-          <Input type="number" v-model="form.min_price as any" :aria-label="t('tasks.form.minPrice')" :placeholder="t('tasks.form.minPrice')" />
-          <span>-</span>
-          <Input type="number" v-model="form.max_price as any" :aria-label="t('tasks.form.maxPrice')" :placeholder="t('tasks.form.maxPrice')" />
+        <div class="space-y-1 sm:col-span-3">
+          <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+            <Input
+              type="number"
+              min="0"
+              v-model="form.min_price as any"
+              :aria-label="t('tasks.form.minPrice')"
+              :aria-invalid="Boolean(priceError)"
+              :placeholder="t('tasks.form.minPrice')"
+            />
+            <span>-</span>
+            <Input
+              type="number"
+              min="0"
+              v-model="form.max_price as any"
+              :aria-label="t('tasks.form.maxPrice')"
+              :aria-invalid="Boolean(priceError)"
+              :placeholder="t('tasks.form.maxPrice')"
+            />
+          </div>
+          <p v-if="priceError" class="text-xs text-red-600">{{ priceError }}</p>
         </div>
       </div>
       <div class="grid gap-2 sm:grid-cols-4 sm:items-center sm:gap-4">
@@ -437,8 +521,10 @@ function handleSubmit() {
               <Input
                 id="cron"
                 v-model="form.cron"
+                :aria-invalid="Boolean(cronError)"
                 :placeholder="t('tasks.form.cronCustomPlaceholder')"
               />
+              <p v-if="cronError" class="text-xs text-red-600 mt-1">{{ cronError }}</p>
               <p class="text-xs text-gray-500 mt-1">
                 {{ t('tasks.form.cronCustomHintLine1') }}
               </p>

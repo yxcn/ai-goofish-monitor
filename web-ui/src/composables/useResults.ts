@@ -59,6 +59,13 @@ export function useResults() {
   const error = ref<Error | null>(null)
   const { on } = useWebSocket()
 
+  // Request sequencing: switching file/filters fires a new request before the
+  // previous one resolves. Each fetch records its own sequence number and
+  // discards its response when a newer request has been issued since.
+  let resultsRequestSeq = 0
+  let insightsRequestSeq = 0
+  let blacklistRequestSeq = 0
+
   function normalizeKeyword(value: string) {
     return value.trim().toLowerCase().replace(/\s+/g, '_')
   }
@@ -94,20 +101,24 @@ export function useResults() {
   }
 
   async function fetchResults() {
-    if (!selectedFile.value) {
+    const seq = ++resultsRequestSeq
+    const file = selectedFile.value
+    if (!file) {
       results.value = []
       totalItems.value = 0
+      isLoading.value = false
       return
     }
 
     isLoading.value = true
     error.value = null
     try {
-      const data = await resultsApi.getResultContent(selectedFile.value, {
+      const data = await resultsApi.getResultContent(file, {
         ...filters,
         page: page.value,
         limit: limit.value,
       })
+      if (seq !== resultsRequestSeq) return // superseded by a newer request
       results.value = data.items
       totalItems.value = data.total_items
       // e.g. the last item on the last page was hidden: fall back to the new last page.
@@ -116,38 +127,48 @@ export function useResults() {
         if (lastPage < page.value) page.value = lastPage
       }
     } catch (e) {
+      if (seq !== resultsRequestSeq) return
       if (e instanceof Error) error.value = e
       results.value = []
       totalItems.value = 0
     } finally {
-      isLoading.value = false
+      if (seq === resultsRequestSeq) isLoading.value = false
     }
   }
 
   async function fetchInsights() {
-    if (!selectedFile.value) {
+    const seq = ++insightsRequestSeq
+    const file = selectedFile.value
+    if (!file) {
       insights.value = null
       return
     }
 
     try {
-      insights.value = await resultsApi.getResultInsights(selectedFile.value)
+      const data = await resultsApi.getResultInsights(file)
+      if (seq !== insightsRequestSeq) return
+      insights.value = data
     } catch (e) {
+      if (seq !== insightsRequestSeq) return
       if (e instanceof Error) error.value = e
       insights.value = null
     }
   }
 
   async function fetchBlacklistRules() {
-    if (!selectedFile.value) {
+    const seq = ++blacklistRequestSeq
+    const file = selectedFile.value
+    if (!file) {
       blacklistKeywords.value = []
       return
     }
 
     try {
-      const data = await resultsApi.getResultBlacklistRules(selectedFile.value)
+      const data = await resultsApi.getResultBlacklistRules(file)
+      if (seq !== blacklistRequestSeq) return
       blacklistKeywords.value = data.keywords || []
     } catch (e) {
+      if (seq !== blacklistRequestSeq) return
       if (e instanceof Error) error.value = e
       blacklistKeywords.value = []
     }
@@ -194,6 +215,21 @@ export function useResults() {
 
   on('tasks_updated', () => {
     fetchTaskNameMap()
+  })
+
+  // The backend only broadcasts `task_status_changed` ({id, is_running}), and only
+  // when the state actually flips. A task that just stopped may have appended to
+  // (or created) a result file, so refresh the file list and the current file's
+  // content/insights. Filters and the page number are deliberately left alone.
+  on('task_status_changed', async (data: { id: number; is_running: boolean } | undefined) => {
+    if (data?.is_running) return
+    const current = selectedFile.value
+    await fetchFiles()
+    // A changed selection (e.g. first file just appeared) is handled by the watchers.
+    if (selectedFile.value && selectedFile.value === current) {
+      fetchResults()
+      fetchInsights()
+    }
   })
 
   async function refreshResults() {

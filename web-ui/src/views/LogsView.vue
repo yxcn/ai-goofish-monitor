@@ -79,7 +79,10 @@ async function handleScroll() {
   lastScrollTop.value = logContainer.value.scrollTop
   lastScrollHeight.value = logContainer.value.scrollHeight
   isPrepending.value = true
-  await loadPrevious(50)
+  const started = await loadPrevious(50)
+  // Skipped (another request held the lock): don't leave the prepend flag armed,
+  // or the next poll append would be mistaken for a prepend and jump the scroll.
+  if (!started) isPrepending.value = false
 }
 
 function openClearDialog() {
