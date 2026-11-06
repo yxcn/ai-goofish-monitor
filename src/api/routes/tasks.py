@@ -4,21 +4,25 @@
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from typing import List
+import asyncio
 import os
-import aiofiles
 from src.api.dependencies import (
     get_process_service,
     get_scheduler_service,
     get_task_generation_service,
     get_task_service,
 )
-from src.services.task_service import TaskService
+from src.services.task_service import TaskNotFoundError, TaskService
 from src.services.process_service import ProcessService
 from src.services.scheduler_service import SchedulerService
 from src.services.task_generation_service import TaskGenerationService
 from src.services.task_generation_runner import (
+    REFERENCE_CRITERIA_FILE,
+    build_criteria_filename,
     build_task_create,
+    cleanup_generated_criteria,
     run_ai_generation_job,
+    save_generated_criteria,
 )
 from src.services.task_payloads import serialize_task, serialize_tasks
 from src.domain.models.task import TaskCreate, TaskUpdate, TaskGenerateRequest
@@ -81,7 +85,10 @@ async def create_task(
     scheduler_service: SchedulerService = Depends(get_scheduler_service),
 ):
     """创建新任务"""
-    task = await service.create_task(task_create)
+    try:
+        task = await service.create_task(task_create)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     await _reload_scheduler_if_needed(service, scheduler_service)
     return {"message": "任务创建成功", "task": serialize_task(task, scheduler_service)}
 @router.post("/generate", response_model=dict)
@@ -95,6 +102,8 @@ async def generate_task(
     print(f"收到任务生成请求: {req.task_name}，模式: {req.decision_mode}")
 
     try:
+        # 重名在起后台作业之前就拦下来，不然要等 AI 生成完才在作业状态里看到失败
+        await service.ensure_task_name_available(req.task_name)
         mode = req.decision_mode or "ai"
         if mode == "ai":
             job = await generation_service.create_job(req.task_name)
@@ -121,6 +130,8 @@ async def generate_task(
 
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         error_msg = f"AI任务生成API发生未知错误: {str(e)}"
         print(error_msg)
@@ -169,6 +180,9 @@ async def update_task(
                 raise HTTPException(status_code=400, detail="关键词模式下至少需要一个关键词。")
         if target_mode == "ai" and (description_changed or switched_to_ai):
             print(f"检测到任务 {task_id} 需要刷新 AI 标准文件，开始重新生成...")
+            # 文件名带任务 id：同关键词的其他任务和参考模板 prompts/macbook_criteria.txt 都不会被覆盖
+            output_filename = build_criteria_filename(existing_task.keyword, task_id=task_id)
+            existed_before = os.path.exists(output_filename)
             try:
                 description_for_ai = (
                     task_update.description
@@ -177,30 +191,25 @@ async def update_task(
                 )
                 if not str(description_for_ai or "").strip():
                     raise HTTPException(status_code=400, detail="AI 模式下详细需求不能为空。")
-                safe_keyword = "".join(
-                    c for c in existing_task.keyword.lower().replace(' ', '_')
-                    if c.isalnum() or c in "_-"
-                ).rstrip()
-                output_filename = f"prompts/{safe_keyword}_criteria.txt"
                 print(f"目标文件路径: {output_filename}")
                 print("开始调用 AI 生成新的分析标准...")
                 generated_criteria = await generate_criteria(
                     user_description=description_for_ai,
-                    reference_file_path="prompts/macbook_criteria.txt"
+                    reference_file_path=REFERENCE_CRITERIA_FILE,
                 )
                 if not generated_criteria or len(generated_criteria.strip()) == 0:
                     print("AI 返回的内容为空")
                     raise HTTPException(status_code=500, detail="AI 未能生成分析标准，返回内容为空。")
                 print(f"保存新的分析标准到: {output_filename}")
-                os.makedirs("prompts", exist_ok=True)
-                async with aiofiles.open(output_filename, 'w', encoding='utf-8') as f:
-                    await f.write(generated_criteria)
+                await save_generated_criteria(output_filename, generated_criteria)
                 print(f"新的分析标准已保存")
                 task_update.ai_prompt_criteria_file = output_filename
                 print(f"已更新 ai_prompt_criteria_file 字段为: {output_filename}")
             except HTTPException:
+                cleanup_generated_criteria(output_filename, existed_before=existed_before)
                 raise
             except Exception as e:
+                cleanup_generated_criteria(output_filename, existed_before=existed_before)
                 error_msg = f"重新生成 criteria 文件时出错: {str(e)}"
                 print(error_msg)
                 import traceback
@@ -209,8 +218,11 @@ async def update_task(
         task = await service.update_task(task_id, task_update)
         await _reload_scheduler_if_needed(service, scheduler_service)
         return {"message": "任务更新成功", "task": serialize_task(task, scheduler_service)}
-    except ValueError as e:
+    except TaskNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        # 不是"找不到"，是请求数据的问题（重名、校验失败）
+        raise HTTPException(status_code=400, detail=str(e))
 @router.delete("/{task_id}", response_model=dict)
 async def delete_task(
     task_id: int,
@@ -238,7 +250,7 @@ async def delete_task(
             )
             if not keyword_still_in_use:
                 await delete_result_file_records(build_result_filename(keyword))
-                delete_price_snapshots(keyword)
+                await asyncio.to_thread(delete_price_snapshots, keyword)
     except Exception as e:
         print(f"删除任务结果文件时出错: {e}")
 

@@ -227,8 +227,11 @@ def _build_scan_activity(
 async def summarize_result_file(
     filename: str,
     task_lookup: dict[str, Task],
+    metrics: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], datetime | None]:
-    metrics = await load_result_summary(filename)
+    """metrics 由 load_result_summaries() 一次性算好传入；不传时退回单文件查询。"""
+    if metrics is None:
+        metrics = await load_result_summary(filename)
     if not metrics:
         return None, [], None
 

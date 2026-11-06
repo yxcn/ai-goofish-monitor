@@ -16,7 +16,7 @@ from src.services.dashboard_payloads import (
     sort_key_by_latest_time,
     summarize_result_file,
 )
-from src.services.result_storage_service import list_result_filenames
+from src.services.result_storage_service import load_result_summaries
 
 MAX_RECENT_ACTIVITIES = 8
 
@@ -42,8 +42,11 @@ async def build_dashboard_snapshot(tasks: list[Task]) -> dict[str, Any]:
     recent_activities = build_task_state_activities(tasks)
     latest_updated_at = None
 
-    for filename in await list_result_filenames():
-        summary, activities, file_latest_time = await summarize_result_file(filename, task_lookup)
+    # 所有结果文件的计数一次 GROUP BY 聚合拿齐，不再逐文件扫 raw_json
+    for filename, metrics in (await load_result_summaries()).items():
+        summary, activities, file_latest_time = await summarize_result_file(
+            filename, task_lookup, metrics=metrics
+        )
         if summary:
             task_summaries[summary["task_name"]] = summary
         recent_activities.extend(activities)

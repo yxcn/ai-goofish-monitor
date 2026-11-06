@@ -14,7 +14,7 @@ from typing import Awaitable, Callable, Dict, TextIO
 from src.ai_handler import send_ntfy_notification
 from src.config import STATE_FILE
 from src.failure_guard import FailureGuard
-from src.infrastructure.persistence.sqlite_task_repository import find_task_by_name_sync
+from src.infrastructure.persistence.sqlite_task_repository import find_task_by_id_sync
 from src.utils import build_task_log_path
 
 STOP_TIMEOUT_SECONDS = 20
@@ -31,6 +31,9 @@ class ProcessService:
         self.log_handles: Dict[int, TextIO] = {}
         self.task_names: Dict[int, str] = {}
         self.exit_watchers: Dict[int, asyncio.Task] = {}
+        # 每个任务一把启动锁：is_running 检查到 _register_runtime 之间有 await，
+        # cron 触发与手动启动同时到达会拉起两个子进程
+        self._start_locks: Dict[int, asyncio.Lock] = {}
         self.failure_guard = FailureGuard()
         self._on_started: LifecycleHook | None = None
         self._on_stopped: LifecycleHook | None = None
@@ -51,16 +54,23 @@ class ProcessService:
         if asyncio.iscoroutine(result):
             await result
 
-    def _resolve_cookie_path(self, task_name: str) -> str | None:
-        """Best-effort cookie/state path for a task."""
+    async def _resolve_cookie_path(self, task_id: int) -> str | None:
+        """Best-effort cookie/state path for a task（同步读库放到线程里，不卡事件循环）。"""
         try:
-            task = find_task_by_name_sync(task_name)
+            task = await asyncio.to_thread(find_task_by_id_sync, task_id)
             if task and isinstance(task.account_state_file, str) and task.account_state_file.strip():
                 return task.account_state_file.strip()
         except Exception:
             pass
 
         return STATE_FILE if os.path.exists(STATE_FILE) else None
+
+    def _start_lock(self, task_id: int) -> asyncio.Lock:
+        lock = self._start_locks.get(task_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._start_locks[task_id] = lock
+        return lock
 
     def is_running(self, task_id: int) -> bool:
         """检查任务是否正在运行"""
@@ -86,13 +96,14 @@ class ProcessService:
         log_file_handle = open(log_file_path, "a", encoding="utf-8")
         return log_file_path, log_file_handle
 
-    def _build_spawn_command(self, task_name: str) -> list[str]:
+    def _build_spawn_command(self, task_id: int, task_name: str) -> list[str]:
+        # 按 id 而不是名称选任务：名称可重复，且以 '-' 开头的名称会被 argparse 当成选项
         command = [
             sys.executable,
             "-u",
             "spider_v2.py",
-            "--task-name",
-            task_name,
+            "--task-id",
+            str(task_id),
         ]
         debug_limit = str(os.getenv(SPIDER_DEBUG_LIMIT_ENV, "")).strip()
         if debug_limit.isdigit() and int(debug_limit) > 0:
@@ -101,6 +112,7 @@ class ProcessService:
 
     async def _spawn_process(
         self,
+        task_id: int,
         task_name: str,
         log_file_handle: TextIO,
     ) -> asyncio.subprocess.Process:
@@ -109,7 +121,7 @@ class ProcessService:
         child_env["PYTHONIOENCODING"] = "utf-8"
         child_env["PYTHONUTF8"] = "1"
         return await asyncio.create_subprocess_exec(
-            *self._build_spawn_command(task_name),
+            *self._build_spawn_command(task_id, task_name),
             stdout=log_file_handle,
             stderr=log_file_handle,
             preexec_fn=preexec_fn,
@@ -131,7 +143,11 @@ class ProcessService:
         self.exit_watchers[task_id] = asyncio.create_task(self._watch_process_exit(process))
 
     async def start_task(self, task_id: int, task_name: str) -> bool:
-        """启动任务进程"""
+        """启动任务进程（同一任务的并发启动串行化，只会起一个子进程）"""
+        async with self._start_lock(task_id):
+            return await self._start_task_locked(task_id, task_name)
+
+    async def _start_task_locked(self, task_id: int, task_name: str) -> bool:
         await self._drain_finished_process(task_id)
         if self.is_running(task_id):
             print(f"任务 '{task_name}' (ID: {task_id}) 已在运行中")
@@ -139,7 +155,7 @@ class ProcessService:
 
         decision = self.failure_guard.should_skip_start(
             task_name,
-            cookie_path=self._resolve_cookie_path(task_name),
+            cookie_path=await self._resolve_cookie_path(task_id),
         )
         if decision.skip:
             await self._notify_skip(task_name, decision)
@@ -149,7 +165,7 @@ class ProcessService:
         log_file_handle = None
         try:
             log_file_path, log_file_handle = self._open_log_file(task_id, task_name)
-            process = await self._spawn_process(task_name, log_file_handle)
+            process = await self._spawn_process(task_id, task_name, log_file_handle)
         except Exception as exc:
             self._close_log_handle(log_file_handle)
             print(f"启动任务 '{task_name}' 失败: {exc}")
@@ -290,6 +306,7 @@ class ProcessService:
         self.log_handles = self._reindex_mapping(self.log_handles, deleted_task_id)
         self.task_names = self._reindex_mapping(self.task_names, deleted_task_id)
         self.exit_watchers = self._reindex_mapping(self.exit_watchers, deleted_task_id)
+        self._start_locks = self._reindex_mapping(self._start_locks, deleted_task_id)
 
     def _reindex_mapping(self, mapping: Dict[int, object], deleted_task_id: int) -> Dict[int, object]:
         reindexed: Dict[int, object] = {}

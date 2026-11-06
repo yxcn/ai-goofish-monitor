@@ -1,6 +1,7 @@
 """
 设置管理路由
 """
+import asyncio
 import os
 from typing import Optional
 
@@ -53,7 +54,7 @@ AI_TEST_MAX_OUTPUT_TOKENS = 32
 
 
 def _reload_env() -> None:
-    load_dotenv(dotenv_path=env_manager.env_file, override=True)
+    load_dotenv(dotenv_path=env_manager.env_file, override=True, interpolate=False)
     reload_settings()
 
 
@@ -145,11 +146,11 @@ async def update_notification_settings(settings: NotificationSettingsModel):
     except NotificationSettingsValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    success = env_manager.apply_changes(updates=updates, deletions=deletions)
+    success = await asyncio.to_thread(env_manager.apply_changes, updates=updates, deletions=deletions)
     if not success:
         raise HTTPException(status_code=500, detail="更新通知设置失败")
 
-    _reload_env()
+    await asyncio.to_thread(_reload_env)
     return {
         "message": "通知设置已成功更新",
         "configured_channels": build_configured_channels(merged_settings),
@@ -226,10 +227,10 @@ async def update_rotation_settings(settings: RotationSettingsModel):
             updates[key] = _normalize_bool_value(value)
         else:
             updates[key] = str(value)
-    success = env_manager.update_values(updates)
+    success = await asyncio.to_thread(env_manager.update_values, updates)
     if not success:
         raise HTTPException(status_code=500, detail="更新轮换设置失败")
-    _reload_env()
+    await asyncio.to_thread(_reload_env)
     return {"message": "轮换设置已成功更新"}
 
 
@@ -304,10 +305,10 @@ async def update_ai_settings(settings: AISettingsModel):
     if settings.PROXY_URL is not None:
         updates["PROXY_URL"] = settings.PROXY_URL
 
-    success = env_manager.update_values(updates)
+    success = await asyncio.to_thread(env_manager.update_values, updates)
     if not success:
         raise HTTPException(status_code=500, detail="更新AI设置失败")
-    _reload_env()
+    await asyncio.to_thread(_reload_env)
     return {"message": "AI设置已成功更新"}
 
 
@@ -334,6 +335,52 @@ def resolve_ai_test_credentials(submitted: dict, *, stored_api_key: str, stored_
     return stored_api_key, base_url, proxy_url
 
 
+def _run_ai_connectivity_test(api_key: str, base_url: str, proxy_url: str, model_name: str):
+    from openai import OpenAI
+    import httpx
+
+    client_params = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "timeout": httpx.Timeout(30.0),
+    }
+
+    if proxy_url:
+        client_params["http_client"] = httpx.Client(proxy=proxy_url)
+
+    client = OpenAI(**client_params)
+    messages = [{"role": "user", "content": AI_TEST_PROMPT}]
+    api_mode = CHAT_COMPLETIONS_API_MODE
+    use_completion_tokens = False
+    response = None
+
+    for attempt in range(3):
+        request_params = build_ai_request_params(
+            api_mode,
+            model=model_name,
+            messages=messages,
+            max_output_tokens=AI_TEST_MAX_OUTPUT_TOKENS,
+        )
+        if use_completion_tokens:
+            request_params = use_max_completion_tokens(request_params)
+        try:
+            response = create_ai_response_sync(client, api_mode, request_params)
+            break
+        except Exception as exc:
+            if (
+                api_mode == CHAT_COMPLETIONS_API_MODE
+                and is_chat_completions_api_unsupported_error(exc)
+            ):
+                api_mode = RESPONSES_API_MODE
+            elif not use_completion_tokens and is_max_tokens_unsupported_error(exc):
+                use_completion_tokens = True
+            else:
+                raise
+            if attempt == 2:
+                raise
+    return response
+
+
 @router.post("/ai/test")
 async def test_ai_settings(settings: dict):
     """测试AI模型设置是否有效"""
@@ -348,50 +395,11 @@ async def test_ai_settings(settings: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
-        from openai import OpenAI
-        import httpx
-
-        client_params = {
-            "api_key": api_key,
-            "base_url": base_url,
-            "timeout": httpx.Timeout(30.0),
-        }
-
-        if proxy_url:
-            client_params["http_client"] = httpx.Client(proxy=proxy_url)
-
         model_name = settings.get("OPENAI_MODEL_NAME", "")
-        client = OpenAI(**client_params)
-        messages = [{"role": "user", "content": AI_TEST_PROMPT}]
-        api_mode = CHAT_COMPLETIONS_API_MODE
-        use_completion_tokens = False
-        response = None
-
-        for attempt in range(3):
-            request_params = build_ai_request_params(
-                api_mode,
-                model=model_name,
-                messages=messages,
-                max_output_tokens=AI_TEST_MAX_OUTPUT_TOKENS,
-            )
-            if use_completion_tokens:
-                request_params = use_max_completion_tokens(request_params)
-            try:
-                response = create_ai_response_sync(client, api_mode, request_params)
-                break
-            except Exception as exc:
-                if (
-                    api_mode == CHAT_COMPLETIONS_API_MODE
-                    and is_chat_completions_api_unsupported_error(exc)
-                ):
-                    api_mode = RESPONSES_API_MODE
-                elif not use_completion_tokens and is_max_tokens_unsupported_error(exc):
-                    use_completion_tokens = True
-                else:
-                    raise
-                if attempt == 2:
-                    raise
-
+        # 同步 HTTP 调用（最多 3 次、各 30s 超时）放到线程里，不卡事件循环
+        response = await asyncio.to_thread(
+            _run_ai_connectivity_test, api_key, base_url, proxy_url, model_name
+        )
         return {
             "success": True,
             "message": "AI模型连接测试成功！",

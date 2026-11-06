@@ -2,6 +2,7 @@
 任务生成作业执行器
 """
 import os
+from uuid import uuid4
 
 import aiofiles
 
@@ -11,12 +12,31 @@ from src.services.scheduler_service import SchedulerService
 from src.services.task_generation_service import TaskGenerationService
 from src.services.task_service import TaskService
 
-def build_criteria_filename(keyword: str) -> str:
-    safe_keyword = "".join(
-        char for char in keyword.lower().replace(" ", "_")
+PROMPTS_DIR = "prompts"
+# 生成分析标准时给 AI 参考的模板（随仓库分发），生成结果绝不能写到这个路径上
+REFERENCE_CRITERIA_FILE = f"{PROMPTS_DIR}/macbook_criteria.txt"
+
+
+def _keyword_slug(keyword: str) -> str:
+    slug = "".join(
+        char for char in str(keyword or "").lower().replace(" ", "_")
         if char.isalnum() or char in "_-"
-    ).rstrip()
-    return f"prompts/{safe_keyword}_criteria.txt"
+    ).strip("_-")
+    return slug or "task"
+
+
+def build_criteria_filename(keyword: str, task_id: int | None = None) -> str:
+    """分析标准文件名带任务维度：同关键词的多个任务各用各的文件，互不覆盖。
+
+    task_id 已知时用 `{slug}_{task_id}_criteria.txt`；创建流程里任务还没落库，用 8 位随机后缀。
+    """
+    suffix = str(task_id) if task_id is not None else uuid4().hex[:8]
+    return f"{PROMPTS_DIR}/{_keyword_slug(keyword)}_{suffix}_criteria.txt"
+
+
+def is_reference_criteria_file(path: str) -> bool:
+    # 绝对路径、./ 前缀都归一到同一个绝对路径再比
+    return os.path.abspath(path) == os.path.abspath(REFERENCE_CRITERIA_FILE)
 
 
 def build_task_create(req: TaskGenerateRequest, criteria_file: str) -> TaskCreate:
@@ -50,10 +70,23 @@ def build_task_create(req: TaskGenerateRequest, criteria_file: str) -> TaskCreat
 async def save_generated_criteria(output_filename: str, generated_criteria: str) -> None:
     if not generated_criteria or not generated_criteria.strip():
         raise RuntimeError("AI 未能生成分析标准，返回内容为空。")
+    if is_reference_criteria_file(output_filename):
+        raise RuntimeError(f"拒绝覆盖参考模板 {REFERENCE_CRITERIA_FILE}，请换一个关键词或任务。")
 
-    os.makedirs("prompts", exist_ok=True)
+    os.makedirs(PROMPTS_DIR, exist_ok=True)
     async with aiofiles.open(output_filename, "w", encoding="utf-8") as file:
         await file.write(generated_criteria)
+
+
+def cleanup_generated_criteria(output_filename: str, *, existed_before: bool) -> None:
+    """失败时只删除本次新建的文件；原本就存在的文件（别的任务在用）和参考模板一律不动。"""
+    if existed_before or is_reference_criteria_file(output_filename):
+        return
+    if os.path.exists(output_filename):
+        try:
+            os.remove(output_filename)
+        except OSError as exc:
+            print(f"清理生成失败的分析标准文件 {output_filename} 出错: {exc}")
 
 
 async def reload_scheduler(
@@ -82,6 +115,7 @@ async def run_ai_generation_job(
     generation_service: TaskGenerationService,
 ) -> None:
     output_filename = build_criteria_filename(req.keyword)
+    existed_before = os.path.exists(output_filename)
     try:
         await advance_job(
             generation_service,
@@ -95,7 +129,7 @@ async def run_ai_generation_job(
 
         generated_criteria = await generate_criteria(
             user_description=req.description or "",
-            reference_file_path="prompts/macbook_criteria.txt",
+            reference_file_path=REFERENCE_CRITERIA_FILE,
             progress_callback=report_progress,
         )
 
@@ -117,6 +151,5 @@ async def run_ai_generation_job(
         await reload_scheduler(task_service, scheduler_service)
         await generation_service.complete(job_id, task, f"任务“{req.task_name}”创建完成。")
     except Exception as exc:
-        if os.path.exists(output_filename):
-            os.remove(output_filename)
+        cleanup_generated_criteria(output_filename, existed_before=existed_before)
         await generation_service.fail(job_id, f"AI 任务生成失败: {exc}")

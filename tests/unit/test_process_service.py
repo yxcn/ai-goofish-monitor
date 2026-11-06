@@ -98,14 +98,83 @@ def test_process_service_adds_debug_limit_arg_when_env_enabled(monkeypatch):
     monkeypatch.setenv("SPIDER_DEBUG_LIMIT", "1")
     service = ProcessService()
 
-    command = service._build_spawn_command("task-a")
+    # 子进程按 id 选任务：任务名不唯一，且以 '-' 开头的名称会被 argparse 当成选项
+    command = service._build_spawn_command(7, "-task-a")
 
     assert command == [
         sys.executable,
         "-u",
         "spider_v2.py",
-        "--task-name",
-        "task-a",
+        "--task-id",
+        "7",
         "--debug-limit",
         "1",
     ]
+
+
+def _no_skip(*_args, **_kwargs):
+    return SimpleNamespace(
+        skip=False, should_notify=False, reason="", consecutive_failures=0, paused_until=None
+    )
+
+
+def test_concurrent_start_of_same_task_spawns_only_one_process(monkeypatch, tmp_path):
+    """cron 触发恰逢手动点"启动"：两个 start_task 并发进来，只能起一个子进程。"""
+    spawned = []
+
+    async def run_scenario():
+        service = ProcessService()
+        service.failure_guard.should_skip_start = _no_skip
+
+        async def fake_resolve_cookie_path(_task_id):
+            return None
+
+        monkeypatch.setattr(service, "_resolve_cookie_path", fake_resolve_cookie_path)
+
+        async def slow_create_subprocess_exec(*_args, **_kwargs):
+            # spawn 期间让出事件循环，老实现会在这里被第二个 start_task 插进来
+            await asyncio.sleep(0.05)
+            process = FakeProcess(pid=1000 + len(spawned))
+            spawned.append(process)
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", slow_create_subprocess_exec)
+        monkeypatch.setattr(
+            "src.services.process_service.build_task_log_path",
+            lambda task_id, _task_name: str(tmp_path / f"task-{task_id}.log"),
+        )
+
+        results = await asyncio.gather(
+            service.start_task(3, "dup"),
+            service.start_task(3, "dup"),
+        )
+        assert sorted(results) == [False, True]
+        assert len(spawned) == 1
+        assert service.is_running(3) is True
+
+        # 不同任务互不阻塞
+        assert await service.start_task(4, "other") is True
+        assert len(spawned) == 2
+
+        for process in spawned:
+            process.finish(0)
+        for task_id in (3, 4):
+            await service._await_exit_watcher(task_id)
+
+    asyncio.run(run_scenario())
+
+
+def test_resolve_cookie_path_reads_task_by_id_off_the_event_loop(monkeypatch, tmp_path):
+    from src.services import process_service as module
+
+    calls = []
+
+    def fake_find_task_by_id_sync(task_id):
+        calls.append(task_id)
+        return SimpleNamespace(account_state_file=" state/acc.json ")
+
+    monkeypatch.setattr(module, "find_task_by_id_sync", fake_find_task_by_id_sync)
+    service = ProcessService()
+
+    assert asyncio.run(service._resolve_cookie_path(9)) == "state/acc.json"
+    assert calls == [9]

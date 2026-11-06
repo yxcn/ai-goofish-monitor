@@ -1,6 +1,8 @@
 """
 结果文件管理路由
 """
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from enum import Enum
@@ -116,7 +118,8 @@ async def get_result_file_content(
         raise HTTPException(status_code=500, detail=f"读取结果文件时出错: {exc}")
     if total_items <= 0 and not await result_file_exists(filename):
         raise HTTPException(status_code=404, detail="结果文件未找到")
-    paginated_results = enrich_records_with_price_insight(items, filename)
+    # 价格快照读库是同步 IO，放到线程里，别卡住事件循环（调度器靠它按时触发）
+    paginated_results = await asyncio.to_thread(enrich_records_with_price_insight, items, filename)
 
     return {
         "total_items": total_items,
@@ -131,8 +134,10 @@ async def get_result_file_insights(filename: str):
     try:
         validate_result_filename(filename)
         keyword = filename.replace("_full_data.jsonl", "")
-        visible_item_ids = load_visible_result_item_ids(filename)
-        return build_price_history_insights(keyword, visible_item_ids=visible_item_ids)
+        visible_item_ids = await asyncio.to_thread(load_visible_result_item_ids, filename)
+        return await asyncio.to_thread(
+            build_price_history_insights, keyword, visible_item_ids=visible_item_ids
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -162,9 +167,8 @@ async def export_result_file_content(
             sort_order=sort_order,
             include_hidden=include_hidden,
         )
-        csv_text = build_results_csv(
-            enrich_records_with_price_insight(results, filename)
-        )
+        enriched = await asyncio.to_thread(enrich_records_with_price_insight, results, filename)
+        csv_text = build_results_csv(enriched)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

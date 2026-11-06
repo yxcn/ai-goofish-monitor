@@ -8,6 +8,8 @@ import json
 import threading
 from pathlib import Path
 
+from src.domain.models.task import Task
+from src.infrastructure.persistence.result_visibility import backfill_hidden_by_rule
 from src.infrastructure.persistence.sqlite_connection import init_schema, sqlite_connection
 from src.infrastructure.persistence.storage_names import (
     build_result_filename,
@@ -23,6 +25,7 @@ LEGACY_PRICE_HISTORY_DIR = "price_history"
 TASKS_BOOTSTRAP_KEY = "bootstrap:legacy_tasks"
 RESULTS_BOOTSTRAP_KEY = "bootstrap:legacy_results"
 SNAPSHOTS_BOOTSTRAP_KEY = "bootstrap:legacy_price_snapshots"
+HIDDEN_BY_RULE_BACKFILL_KEY = "migration:result_items_hidden_by_rule_backfill"
 
 
 def bootstrap_sqlite_storage(
@@ -38,6 +41,7 @@ def bootstrap_sqlite_storage(
             _import_tasks_if_needed(conn, legacy_config_file)
             _import_results_if_needed(conn, legacy_result_dir)
             _import_price_snapshots_if_needed(conn, legacy_price_history_dir)
+            _backfill_hidden_by_rule_if_needed(conn)
 
 
 def _table_is_empty(conn, table_name: str) -> bool:
@@ -74,6 +78,10 @@ def _import_tasks_if_needed(conn, legacy_config_file: str | None) -> None:
 
     for index, raw_task in enumerate(tasks):
         if not isinstance(raw_task, dict):
+            print(f"[bootstrap] 跳过 {legacy_config_file} 第 {index} 条：不是对象")
+            continue
+        task = _validate_legacy_task(raw_task, index=index, source=str(legacy_config_file))
+        if task is None:
             continue
         conn.execute(
             """
@@ -89,33 +97,62 @@ def _import_tasks_if_needed(conn, legacy_config_file: str | None) -> None:
             """,
             (
                 index,
-                raw_task.get("task_name", ""),
-                _as_int(raw_task.get("enabled", True)),
-                raw_task.get("keyword", ""),
-                raw_task.get("description", ""),
-                _as_int(raw_task.get("analyze_images", True)),
-                int(raw_task.get("max_pages", 1) or 1),
-                _as_int(raw_task.get("personal_only", False)),
-                raw_task.get("min_price"),
-                raw_task.get("max_price"),
-                raw_task.get("cron"),
-                raw_task.get("ai_prompt_base_file", "prompts/base_prompt.txt"),
-                raw_task.get("ai_prompt_criteria_file", ""),
-                raw_task.get("account_state_file"),
-                raw_task.get("account_strategy", "auto"),
-                _as_int(raw_task.get("free_shipping", True)),
-                raw_task.get("new_publish_option"),
-                raw_task.get("region"),
-                raw_task.get("decision_mode", "ai"),
-                json.dumps(raw_task.get("keyword_rules") or [], ensure_ascii=False),
-                json.dumps(raw_task.get("title_include_keywords") or [], ensure_ascii=False),
-                json.dumps(raw_task.get("extra_keywords") or [], ensure_ascii=False),
-                json.dumps(raw_task.get("title_exclude_keywords") or [], ensure_ascii=False),
-                json.dumps(raw_task.get("attribute_rules") or [], ensure_ascii=False),
-                _as_int(raw_task.get("is_running", False)),
+                task.task_name,
+                int(task.enabled),
+                task.keyword,
+                task.description or "",
+                int(task.analyze_images),
+                int(task.max_pages),
+                int(task.personal_only),
+                task.min_price,
+                task.max_price,
+                task.cron,
+                task.ai_prompt_base_file,
+                task.ai_prompt_criteria_file,
+                task.account_state_file,
+                task.account_strategy,
+                int(task.free_shipping),
+                task.new_publish_option,
+                task.region,
+                task.decision_mode,
+                json.dumps(task.keyword_rules or [], ensure_ascii=False),
+                json.dumps(task.title_include_keywords or [], ensure_ascii=False),
+                json.dumps(task.extra_keywords or [], ensure_ascii=False),
+                json.dumps(task.title_exclude_keywords or [], ensure_ascii=False),
+                json.dumps(task.attribute_rules or [], ensure_ascii=False),
+                0,
             ),
         )
     _mark_bootstrap_completed(conn, TASKS_BOOTSTRAP_KEY)
+    conn.commit()
+
+
+def _validate_legacy_task(raw_task: dict, *, index: int, source: str) -> Task | None:
+    """旧 config.json 的任务逐条过 Task 模型校验；坏数据打印并跳过，而不是让 find_all 永久抛错。"""
+    payload = dict(raw_task)
+    payload.setdefault("ai_prompt_base_file", "prompts/base_prompt.txt")
+    payload.setdefault("ai_prompt_criteria_file", "")
+    payload.setdefault("max_pages", 1)
+    payload.setdefault("personal_only", False)
+    payload.setdefault("enabled", True)
+    payload["id"] = index
+    payload["is_running"] = False
+    try:
+        return Task(**payload)
+    except Exception as exc:
+        name = raw_task.get("task_name") or f"#{index}"
+        print(f"[bootstrap] 跳过 {source} 中无法解析的任务 '{name}'：{exc}")
+        return None
+
+
+def _backfill_hidden_by_rule_if_needed(conn) -> None:
+    """升级旧库：按已保存的黑名单规则回填 result_items.hidden_by_rule（只跑一次）。"""
+    if _bootstrap_completed(conn, HIDDEN_BY_RULE_BACKFILL_KEY):
+        return
+    changed = backfill_hidden_by_rule(conn)
+    if changed:
+        print(f"[bootstrap] 已为 {changed} 条结果记录回填黑名单命中状态")
+    _mark_bootstrap_completed(conn, HIDDEN_BY_RULE_BACKFILL_KEY)
     conn.commit()
 
 

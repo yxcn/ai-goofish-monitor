@@ -133,7 +133,7 @@ def reload_settings() -> None:
     from dotenv import load_dotenv
     from src.infrastructure.config.env_manager import env_manager
 
-    load_dotenv(dotenv_path=env_manager.env_file, override=True)
+    load_dotenv(dotenv_path=env_manager.env_file, override=True, interpolate=False)
     _settings_instance = None
     settings = get_settings()
     ai_settings = AISettings()

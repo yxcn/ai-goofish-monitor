@@ -8,8 +8,14 @@ import hashlib
 import json
 from datetime import datetime
 
+from src.infrastructure.persistence.result_visibility import (
+    VISIBLE_ROW_SQL,
+    compute_hidden_by_rule,
+    load_blacklist_keywords,
+    recompute_hidden_by_rule,
+)
 from src.infrastructure.persistence.sqlite_bootstrap import bootstrap_sqlite_storage
-from src.infrastructure.persistence.sqlite_connection import sqlite_connection
+from src.infrastructure.persistence.sqlite_connection import retry_on_lock, sqlite_connection
 from src.infrastructure.persistence.storage_names import build_result_filename
 from src.services.price_history_service import parse_price_value
 from src.services.result_blacklist_service import (
@@ -31,6 +37,16 @@ _AI_ERROR_ROW_SQL = (
     "(json_valid(raw_json) AND COALESCE(json_extract(raw_json, '$.ai_analysis.error'), '') != '')"
 )
 
+_SUMMARY_AGGREGATE_SQL = """
+    COUNT(*) AS total_items,
+    COALESCE(SUM(CASE WHEN is_recommended = 1 THEN 1 ELSE 0 END), 0) AS recommended_items,
+    COALESCE(SUM(CASE WHEN is_recommended = 1 AND analysis_source = 'ai' THEN 1 ELSE 0 END), 0)
+        AS ai_recommended_items,
+    COALESCE(SUM(CASE WHEN is_recommended = 1 AND analysis_source = 'keyword' THEN 1 ELSE 0 END), 0)
+        AS keyword_recommended_items,
+    MAX(crawl_time) AS latest_crawl_time
+"""
+
 
 def _get_link_unique_key(link: str) -> str:
     return link.split("&", 1)[0]
@@ -46,8 +62,20 @@ def _fallback_unique_key(record: dict, item: dict) -> str:
     return f"hash:{digest}"
 
 
-def _parse_raw_record(raw_json: str, *, status: str | None = None) -> dict:
-    record = json.loads(raw_json)
+def _record_unique_key(record: dict) -> str:
+    item = record.get("商品信息", {}) or {}
+    link = str(item.get("商品链接") or "")
+    return _get_link_unique_key(link) if link else _fallback_unique_key(record, item)
+
+
+def _parse_raw_record(raw_json: str, *, status: str | None = None) -> dict | None:
+    try:
+        record = json.loads(raw_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        print(f"[results] 跳过无法解析的结果记录: {exc}")
+        return None
+    if not isinstance(record, dict):
+        return None
     if status is not None:
         record["_status"] = status
     return record
@@ -58,6 +86,7 @@ def _build_query_conditions(
     filename: str,
     ai_recommended_only: bool,
     keyword_recommended_only: bool,
+    include_hidden: bool,
 ) -> tuple[str, list]:
     conditions = ["result_filename = ?"]
     params: list = [filename]
@@ -69,6 +98,8 @@ def _build_query_conditions(
         conditions.append("is_recommended = 1")
         conditions.append("analysis_source = ?")
         params.append("keyword")
+    if not include_hidden:
+        conditions.append(VISIBLE_ROW_SQL)
     return " AND ".join(conditions), params
 
 
@@ -79,21 +110,7 @@ def _sort_expression(sort_by: str, sort_order: str) -> str:
 
 
 def _load_blacklist_keywords_from_conn(conn, filename: str) -> list[str]:
-    row = conn.execute(
-        """
-        SELECT blacklist_keywords_json
-        FROM result_blacklist_rules
-        WHERE result_filename = ?
-        """,
-        (filename,),
-    ).fetchone()
-    if row is None:
-        return []
-    try:
-        payload = json.loads(row["blacklist_keywords_json"] or "[]")
-    except json.JSONDecodeError:
-        return []
-    return normalize_blacklist_keywords(payload)
+    return load_blacklist_keywords(conn, filename)
 
 
 def _decorate_record_visibility(record: dict, status: str | None, blacklist_keywords: list[str]) -> dict:
@@ -117,6 +134,16 @@ def _is_record_visible(record: dict) -> bool:
     return record.get("_effective_hidden") is not True
 
 
+def _decorate_rows(rows, blacklist_keywords: list[str]) -> list[dict]:
+    records: list[dict] = []
+    for row in rows:
+        record = _parse_raw_record(str(row["raw_json"]), status=row["status"])
+        if record is None:
+            continue
+        records.append(_decorate_record_visibility(record, row["status"], blacklist_keywords))
+    return records
+
+
 def _load_filtered_records_from_conn(
     conn,
     *,
@@ -126,50 +153,74 @@ def _load_filtered_records_from_conn(
     sort_by: str,
     sort_order: str,
     include_hidden: bool,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[dict]:
+    """可见性过滤与分页都在 SQL 里完成，只对返回的行做 json.loads。"""
     where_clause, params = _build_query_conditions(
         filename=filename,
         ai_recommended_only=ai_recommended_only,
         keyword_recommended_only=keyword_recommended_only,
+        include_hidden=include_hidden,
     )
     order_clause = _sort_expression(sort_by, sort_order)
-    rows = conn.execute(
-        f"""
+    sql = f"""
         SELECT raw_json, status
         FROM result_items
         WHERE {where_clause}
         ORDER BY {order_clause}
-        """,
-        tuple(params),
-    ).fetchall()
+    """
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params = [*params, int(limit), int(offset)]
+    rows = conn.execute(sql, tuple(params)).fetchall()
     blacklist_keywords = _load_blacklist_keywords_from_conn(conn, filename)
+    return _decorate_rows(rows, blacklist_keywords)
 
-    records: list[dict] = []
-    for row in rows:
-        record = _parse_raw_record(str(row["raw_json"]), status=row["status"])
-        decorated = _decorate_record_visibility(record, row["status"], blacklist_keywords)
-        if include_hidden or _is_record_visible(decorated):
-            records.append(decorated)
-    return records
+
+def _count_filtered_records_from_conn(
+    conn,
+    *,
+    filename: str,
+    ai_recommended_only: bool,
+    keyword_recommended_only: bool,
+    include_hidden: bool,
+) -> int:
+    where_clause, params = _build_query_conditions(
+        filename=filename,
+        ai_recommended_only=ai_recommended_only,
+        keyword_recommended_only=keyword_recommended_only,
+        include_hidden=include_hidden,
+    )
+    row = conn.execute(
+        f"SELECT COUNT(*) AS n FROM result_items WHERE {where_clause}",
+        tuple(params),
+    ).fetchone()
+    return int(row["n"] if row else 0)
 
 
 async def save_result_record(record: dict, keyword: str) -> bool:
     return await asyncio.to_thread(_save_result_record_sync, record, keyword)
 
 
+@retry_on_lock
 def _save_result_record_sync(record: dict, keyword: str) -> bool:
     bootstrap_sqlite_storage()
     item = record.get("商品信息", {}) or {}
     analysis = record.get("ai_analysis", {}) or {}
     link = str(item.get("商品链接") or "")
-    link_unique_key = _get_link_unique_key(link) if link else _fallback_unique_key(record, item)
+    link_unique_key = _record_unique_key(record)
     keyword_hit_count = analysis.get("keyword_hit_count", 0)
     try:
         keyword_hit_count = int(keyword_hit_count)
     except (TypeError, ValueError):
         keyword_hit_count = 0
+    result_filename = build_result_filename(keyword)
 
     with sqlite_connection() as conn:
+        hidden_by_rule = compute_hidden_by_rule(
+            record, _load_blacklist_keywords_from_conn(conn, result_filename)
+        )
         # 同一商品已存在时默认忽略；只有旧行是"AI 调用失败"的占位记录时才用新结果覆盖，
         # 这样 AI 恢复后重新分析的结果能替换掉失败记录，而正常记录不会被后续运行改写。
         conn.execute(
@@ -177,8 +228,8 @@ def _save_result_record_sync(record: dict, keyword: str) -> bool:
             INSERT INTO result_items (
                 result_filename, keyword, task_name, crawl_time, publish_time, price,
                 price_display, item_id, title, link, link_unique_key, seller_nickname,
-                is_recommended, analysis_source, keyword_hit_count, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                is_recommended, analysis_source, keyword_hit_count, hidden_by_rule, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(result_filename, link_unique_key) DO UPDATE SET
                 keyword = excluded.keyword,
                 task_name = excluded.task_name,
@@ -193,11 +244,12 @@ def _save_result_record_sync(record: dict, keyword: str) -> bool:
                 is_recommended = excluded.is_recommended,
                 analysis_source = excluded.analysis_source,
                 keyword_hit_count = excluded.keyword_hit_count,
+                hidden_by_rule = excluded.hidden_by_rule,
                 raw_json = excluded.raw_json
             WHERE {_AI_ERROR_ROW_SQL.replace("raw_json", "result_items.raw_json")}
             """,
             (
-                build_result_filename(keyword),
+                result_filename,
                 record.get("搜索关键字", keyword),
                 record.get("任务名称", ""),
                 record.get("爬取时间", ""),
@@ -212,6 +264,7 @@ def _save_result_record_sync(record: dict, keyword: str) -> bool:
                 1 if analysis.get("is_recommended") else 0,
                 analysis.get("analysis_source"),
                 keyword_hit_count,
+                hidden_by_rule,
                 json.dumps(record, ensure_ascii=False),
             ),
         )
@@ -251,12 +304,11 @@ async def mark_notification_status(record: dict, keyword: str, status: dict) -> 
     await asyncio.to_thread(_mark_notification_status_sync, record, keyword, status)
 
 
+@retry_on_lock
 def _mark_notification_status_sync(record: dict, keyword: str, status: dict) -> None:
     """把推送结果写回记录的 raw_json（键 通知状态），失败的渠道能在结果里看到并补推。"""
     bootstrap_sqlite_storage()
-    item = record.get("商品信息", {}) or {}
-    link = str(item.get("商品链接") or "")
-    link_unique_key = _get_link_unique_key(link) if link else _fallback_unique_key(record, item)
+    link_unique_key = _record_unique_key(record)
     with sqlite_connection() as conn:
         conn.execute(
             """
@@ -305,11 +357,17 @@ async def delete_result_file_records(filename: str) -> int:
     return await asyncio.to_thread(_delete_result_file_records_sync, filename)
 
 
+@retry_on_lock
 def _delete_result_file_records_sync(filename: str) -> int:
+    """删除结果文件的全部记录，连同它的黑名单规则（否则同关键词的新任务会继承旧规则）。"""
     bootstrap_sqlite_storage()
     with sqlite_connection() as conn:
         cursor = conn.execute(
             "DELETE FROM result_items WHERE result_filename = ?",
+            (filename,),
+        )
+        conn.execute(
+            "DELETE FROM result_blacklist_rules WHERE result_filename = ?",
             (filename,),
         )
         conn.commit()
@@ -353,6 +411,13 @@ def _query_result_records_sync(
     bootstrap_sqlite_storage()
     offset = max(page - 1, 0) * limit
     with sqlite_connection() as conn:
+        total = _count_filtered_records_from_conn(
+            conn,
+            filename=filename,
+            ai_recommended_only=ai_recommended_only,
+            keyword_recommended_only=keyword_recommended_only,
+            include_hidden=include_hidden,
+        )
         records = _load_filtered_records_from_conn(
             conn,
             filename=filename,
@@ -361,9 +426,10 @@ def _query_result_records_sync(
             sort_by=sort_by,
             sort_order=sort_order,
             include_hidden=include_hidden,
+            limit=limit,
+            offset=offset,
         )
-    total = len(records)
-    return total, records[offset: offset + limit]
+    return total, records
 
 
 async def load_all_result_records(
@@ -421,48 +487,95 @@ def _build_result_ndjson_sync(filename: str) -> str:
     return "\n".join(str(row["raw_json"]) for row in rows)
 
 
+def _load_latest_visible_record(conn, filename: str, *, recommended_only: bool) -> dict | None:
+    conditions = [f"result_filename = ? AND {VISIBLE_ROW_SQL}"]
+    if recommended_only:
+        conditions.append("is_recommended = 1")
+    row = conn.execute(
+        f"""
+        SELECT raw_json, status
+        FROM result_items
+        WHERE {" AND ".join(conditions)}
+        ORDER BY crawl_time DESC, id DESC
+        LIMIT 1
+        """,
+        (filename,),
+    ).fetchone()
+    if row is None:
+        return None
+    record = _parse_raw_record(str(row["raw_json"]), status=row["status"])
+    if record is None:
+        return None
+    return _decorate_record_visibility(record, row["status"], _load_blacklist_keywords_from_conn(conn, filename))
+
+
+def _build_summary_from_aggregate(conn, filename: str, aggregate) -> dict | None:
+    total_items = int(aggregate["total_items"] or 0)
+    if total_items <= 0:
+        return None
+    latest_record = _load_latest_visible_record(conn, filename, recommended_only=False)
+    recommended_items = int(aggregate["recommended_items"] or 0)
+    latest_recommendation = (
+        _load_latest_visible_record(conn, filename, recommended_only=True)
+        if recommended_items > 0
+        else None
+    )
+    return {
+        "total_items": total_items,
+        "recommended_items": recommended_items,
+        "ai_recommended_items": int(aggregate["ai_recommended_items"] or 0),
+        "keyword_recommended_items": int(aggregate["keyword_recommended_items"] or 0),
+        "latest_crawl_time": (latest_record or {}).get("爬取时间") or aggregate["latest_crawl_time"],
+        "latest_record": latest_record,
+        "latest_recommendation": latest_recommendation,
+    }
+
+
 async def load_result_summary(filename: str) -> dict | None:
     return await asyncio.to_thread(_load_result_summary_sync, filename)
 
 
 def _load_result_summary_sync(filename: str) -> dict | None:
+    """单个结果文件的可见记录汇总：计数走 SQL 聚合，只解析最新一条记录/最新一条推荐。"""
     bootstrap_sqlite_storage()
     with sqlite_connection() as conn:
-        visible_records = _load_filtered_records_from_conn(
-            conn,
-            filename=filename,
-            ai_recommended_only=False,
-            keyword_recommended_only=False,
-            sort_by="crawl_time",
-            sort_order="desc",
-            include_hidden=False,
-        )
-    if not visible_records:
-        return None
+        aggregate = conn.execute(
+            f"""
+            SELECT {_SUMMARY_AGGREGATE_SQL}
+            FROM result_items
+            WHERE result_filename = ? AND {VISIBLE_ROW_SQL}
+            """,
+            (filename,),
+        ).fetchone()
+        if aggregate is None:
+            return None
+        return _build_summary_from_aggregate(conn, filename, aggregate)
 
-    recommended_records = [
-        record
-        for record in visible_records
-        if (record.get("ai_analysis", {}) or {}).get("is_recommended") is True
-    ]
-    ai_recommended_items = 0
-    keyword_recommended_items = 0
-    for record in recommended_records:
-        source = (record.get("ai_analysis", {}) or {}).get("analysis_source")
-        if source == "ai":
-            ai_recommended_items += 1
-        elif source == "keyword":
-            keyword_recommended_items += 1
 
-    return {
-        "total_items": len(visible_records),
-        "recommended_items": len(recommended_records),
-        "ai_recommended_items": ai_recommended_items,
-        "keyword_recommended_items": keyword_recommended_items,
-        "latest_crawl_time": visible_records[0].get("爬取时间"),
-        "latest_record": visible_records[0],
-        "latest_recommendation": recommended_records[0] if recommended_records else None,
-    }
+async def load_result_summaries() -> dict[str, dict]:
+    return await asyncio.to_thread(_load_result_summaries_sync)
+
+
+def _load_result_summaries_sync() -> dict[str, dict]:
+    """所有结果文件的汇总，一次 GROUP BY 聚合 + 每个文件两条 LIMIT 1 查询（dashboard 用）。"""
+    bootstrap_sqlite_storage()
+    summaries: dict[str, dict] = {}
+    with sqlite_connection() as conn:
+        aggregates = conn.execute(
+            f"""
+            SELECT result_filename, {_SUMMARY_AGGREGATE_SQL}
+            FROM result_items
+            WHERE {VISIBLE_ROW_SQL}
+            GROUP BY result_filename
+            ORDER BY latest_crawl_time DESC, result_filename DESC
+            """
+        ).fetchall()
+        for aggregate in aggregates:
+            filename = str(aggregate["result_filename"])
+            summary = _build_summary_from_aggregate(conn, filename, aggregate)
+            if summary:
+                summaries[filename] = summary
+    return summaries
 
 
 async def update_item_status(filename: str, item_id: str, status: str) -> bool:
@@ -472,6 +585,7 @@ async def update_item_status(filename: str, item_id: str, status: str) -> bool:
     return await asyncio.to_thread(_update_item_status_sync, filename, item_id, status)
 
 
+@retry_on_lock
 def _update_item_status_sync(filename: str, item_id: str, status: str) -> bool:
     bootstrap_sqlite_storage()
     with sqlite_connection() as conn:
@@ -497,42 +611,45 @@ async def save_result_blacklist_keywords(filename: str, keywords: list[str]) -> 
     return await asyncio.to_thread(_save_result_blacklist_keywords_sync, filename, keywords)
 
 
+@retry_on_lock
 def _save_result_blacklist_keywords_sync(filename: str, keywords: list[str]) -> list[str]:
+    """保存规则并在同一事务里重算该文件所有行的 hidden_by_rule。"""
     bootstrap_sqlite_storage()
     normalized_keywords = normalize_blacklist_keywords(keywords)
     now = datetime.now().isoformat()
     with sqlite_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO result_blacklist_rules (
-                result_filename, blacklist_keywords_json, updated_at
-            ) VALUES (?, ?, ?)
-            ON CONFLICT(result_filename) DO UPDATE SET
-                blacklist_keywords_json = excluded.blacklist_keywords_json,
-                updated_at = excluded.updated_at
-            """,
-            (filename, json.dumps(normalized_keywords, ensure_ascii=False), now),
-        )
-        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                """
+                INSERT INTO result_blacklist_rules (
+                    result_filename, blacklist_keywords_json, updated_at
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(result_filename) DO UPDATE SET
+                    blacklist_keywords_json = excluded.blacklist_keywords_json,
+                    updated_at = excluded.updated_at
+                """,
+                (filename, json.dumps(normalized_keywords, ensure_ascii=False), now),
+            )
+            recompute_hidden_by_rule(conn, filename, normalized_keywords)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     return normalized_keywords
 
 
 def load_visible_result_item_ids(filename: str) -> set[str]:
+    """可见记录的商品 ID 集合：直接读 item_id 列，不解析 raw_json。"""
     bootstrap_sqlite_storage()
     with sqlite_connection() as conn:
-        visible_records = _load_filtered_records_from_conn(
-            conn,
-            filename=filename,
-            ai_recommended_only=False,
-            keyword_recommended_only=False,
-            sort_by="crawl_time",
-            sort_order="desc",
-            include_hidden=False,
-        )
-    item_ids: set[str] = set()
-    for record in visible_records:
-        product = record.get("商品信息", {}) or {}
-        item_id = str(product.get("商品ID") or "").strip()
-        if item_id:
-            item_ids.add(item_id)
-    return item_ids
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT item_id
+            FROM result_items
+            WHERE result_filename = ? AND {VISIBLE_ROW_SQL}
+              AND item_id IS NOT NULL AND TRIM(item_id) != ''
+            """,
+            (filename,),
+        ).fetchall()
+    return {str(row["item_id"]).strip() for row in rows}

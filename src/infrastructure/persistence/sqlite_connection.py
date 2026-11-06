@@ -5,14 +5,56 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator, TypeVar
 
 from src.infrastructure.persistence.storage_names import DEFAULT_DATABASE_PATH
 
 
 BUSY_TIMEOUT_MS = 5000
+# busy_timeout 到期后 SQLite 仍可能抛 "database is locked"/"busy"（WAL checkpoint、另一进程长写），
+# 写操作在放弃前再做几次短退避重试
+LOCK_RETRY_DELAYS = (0.2, 0.5, 1.0)
+_LOCK_ERROR_MARKERS = ("locked", "busy")
+
+T = TypeVar("T")
+
+
+def is_sqlite_lock_error(exc: BaseException) -> bool:
+    return isinstance(exc, sqlite3.OperationalError) and any(
+        marker in str(exc).lower() for marker in _LOCK_ERROR_MARKERS
+    )
+
+
+def run_with_lock_retry(
+    operation: Callable[[], T],
+    *,
+    delays: tuple[float, ...] = LOCK_RETRY_DELAYS,
+    label: str = "sqlite write",
+) -> T:
+    """执行一个同步 SQLite 操作；遇到锁冲突按 delays 退避重试，其他错误直接抛出。"""
+    for attempt, delay in enumerate(delays, start=1):
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_lock_error(exc):
+                raise
+            print(f"[sqlite] {label} 遇到锁冲突 ({exc})，{delay}s 后第 {attempt}/{len(delays)} 次重试")
+            time.sleep(delay)
+    return operation()
+
+
+def retry_on_lock(func: Callable[..., T]) -> Callable[..., T]:
+    """装饰同步写函数：锁冲突时按 LOCK_RETRY_DELAYS 重试。"""
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        return run_with_lock_retry(lambda: func(*args, **kwargs), label=func.__name__)
+
+    return wrapper
 
 SCHEMA_STATEMENTS = (
     """
@@ -69,6 +111,7 @@ SCHEMA_STATEMENTS = (
         analysis_source TEXT,
         keyword_hit_count INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
+        hidden_by_rule INTEGER NOT NULL DEFAULT 0,
         raw_json TEXT NOT NULL,
         UNIQUE(result_filename, link_unique_key)
     )
@@ -147,8 +190,22 @@ def init_schema(conn: sqlite3.Connection) -> None:
     for statement in SCHEMA_STATEMENTS:
         conn.execute(statement)
     _migrate_result_items_status(conn)
+    _migrate_result_items_hidden_by_rule(conn)
     _migrate_tasks_json_list_columns(conn)
     conn.commit()
+
+
+def _migrate_result_items_hidden_by_rule(conn: sqlite3.Connection) -> None:
+    """result_items 补 hidden_by_rule 列（黑名单命中落列，查询/计数走 WHERE 而不是解析 raw_json）。幂等。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(result_items)").fetchall()}
+    if "hidden_by_rule" not in cols:
+        conn.execute(
+            "ALTER TABLE result_items ADD COLUMN hidden_by_rule INTEGER NOT NULL DEFAULT 0"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_results_filename_visibility_crawl"
+        " ON result_items(result_filename, status, hidden_by_rule, crawl_time DESC)"
+    )
 
 
 # 后加的任务列表型字段，旧库缺哪列补哪列（都是 JSON 数组文本，默认空列表）

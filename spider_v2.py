@@ -20,7 +20,10 @@ async def main():
   # 运行 config.json 中定义的所有任务
   python spider_v2.py
 
-  # 只运行名为 "Sony A7M4" 的任务 (通常由调度器调用)
+  # 只运行 ID 为 3 的任务 (调度器/Web 后台用这个，任务名可重复且可能以 '-' 开头)
+  python spider_v2.py --task-id 3
+
+  # 只运行名为 "Sony A7M4" 的任务 (手工命令行兼容；重名时取 ID 最小的)
   python spider_v2.py --task-name "Sony A7M4"
 
   # 调试模式: 运行所有任务，但每个任务只处理前3个新发现的商品
@@ -30,8 +33,11 @@ async def main():
     )
     parser.add_argument("--debug-limit", type=int, default=0, help="调试模式：每个任务仅处理前 N 个新商品（0 表示无限制）")
     parser.add_argument("--config", type=str, help="指定任务配置文件路径（传入时优先读取 JSON）")
-    parser.add_argument("--task-name", type=str, help="只运行指定名称的单个任务 (用于定时任务调度)")
+    parser.add_argument("--task-id", type=int, default=None, help="只运行指定 ID 的单个任务 (调度器/Web 后台使用)")
+    parser.add_argument("--task-name", type=str, help="只运行指定名称的单个任务 (兼容手工命令行；重名时取 ID 最小的)")
     args = parser.parse_args()
+    if args.task_id is not None and args.task_name:
+        parser.error("--task-id 与 --task-name 只能指定一个")
 
     if args.config:
         if not os.path.exists(args.config):
@@ -41,6 +47,10 @@ async def main():
                 tasks_config = json.load(f)
         except (json.JSONDecodeError, IOError) as e:
             sys.exit(f"错误: 读取或解析配置文件 '{args.config}' 失败: {e}")
+        # JSON 配置没有 id 字段时按下标补一个，让 --task-id 对两种配置源都可用
+        for index, task in enumerate(tasks_config):
+            if isinstance(task, dict) and task.get("id") is None:
+                task["id"] = index
     else:
         repository = SqliteTaskRepository()
         tasks = await repository.find_all()
@@ -152,22 +162,29 @@ async def main():
     if args.debug_limit > 0:
         print(f"** 调试模式已激活，每个任务最多处理 {args.debug_limit} 个新商品 **")
     
-    if args.task_name:
+    if args.task_id is not None:
+        print(f"** 定时任务模式：只执行任务 ID {args.task_id} **")
+    elif args.task_name:
         print(f"** 定时任务模式：只执行任务 '{args.task_name}' **")
 
     print("--------------------")
 
     active_task_configs = []
-    if args.task_name:
-        # 如果指定了任务名称，只查找该任务
-        task_found = next((task for task in tasks_config if task.get('task_name') == args.task_name), None)
+    if args.task_id is not None or args.task_name:
+        if args.task_id is not None:
+            task_found = next((task for task in tasks_config if task.get("id") == args.task_id), None)
+            task_label = f"ID {args.task_id}"
+        else:
+            # 任务名不唯一：按名称只用于手工命令行，重名时取 ID 最小（列表最前）的那个
+            task_found = next((task for task in tasks_config if task.get('task_name') == args.task_name), None)
+            task_label = f"'{args.task_name}'"
         if task_found:
             if task_found.get("enabled", False):
                 active_task_configs.append(task_found)
             else:
-                print(f"任务 '{args.task_name}' 已被禁用，跳过执行。")
+                print(f"任务 {task_label} 已被禁用，跳过执行。")
         else:
-            print(f"错误：在配置文件中未找到名为 '{args.task_name}' 的任务。")
+            print(f"错误：在配置中未找到任务 {task_label}。")
             return
     else:
         # 否则，按原计划加载所有启用的任务

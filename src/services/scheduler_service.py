@@ -14,8 +14,15 @@ from src.services.process_service import ProcessService
 class SchedulerService:
     """调度服务"""
 
+    # APScheduler 默认 misfire_grace_time=1 秒：事件循环被同步 IO 卡住超过 1 秒，整点任务就被静默跳过。
+    # 放宽到 5 分钟；coalesce 把积压的多次触发合并成一次；同一任务最多一个实例在跑。
+    JOB_DEFAULTS = {"misfire_grace_time": 300, "coalesce": True, "max_instances": 1}
+
     def __init__(self, process_service: ProcessService):
-        self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+        self.scheduler = AsyncIOScheduler(
+            timezone="Asia/Shanghai",
+            job_defaults=dict(self.JOB_DEFAULTS),
+        )
         self.process_service = process_service
 
     def start(self):
