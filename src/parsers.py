@@ -106,6 +106,43 @@ def parse_item_detail_extras(item_do: dict) -> dict:
     return extras
 
 
+def _as_count(value):
+    """collectCnt 这类计数可能是数字或数字字符串；bool 和占位符返回 None。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_item_detail_facts(item_do: dict, seller_do: dict) -> dict:
+    """从详情接口的 itemDO / sellerDO 中提取商品页上展示的热度和卖家活跃度信息。
+
+    收藏数、卖家所在城市（比搜索结果里的省份细）、卖家最近活跃时间（"21分钟前来过"）、
+    24 小时回复率和平均回复时长。缺失的字段不会出现在返回值里。
+    """
+    item_do = item_do if isinstance(item_do, dict) else {}
+    seller_do = seller_do if isinstance(seller_do, dict) else {}
+    facts = {}
+
+    favorites = _as_count(item_do.get("collectCnt"))
+    if favorites is not None:
+        facts["收藏数"] = favorites
+
+    text_fields = (
+        ("卖家所在城市", seller_do.get("city") or seller_do.get("publishCity")),
+        ("卖家最近活跃", seller_do.get("lastVisitTime")),
+        ("卖家24小时回复率", seller_do.get("replyRatio24h")),
+        ("卖家平均回复时长", seller_do.get("replyInterval")),
+    )
+    for key, raw in text_fields:
+        value = str(raw or "").strip()
+        if value:
+            facts[key] = value
+    return facts
+
+
 # 评价列表里的 rateTagList 标的是“写评价的人”的角色：
 # 标签为“卖家”的评价是别人卖东西给该用户后留下的（内容多为“很好的买家”），
 # 说明该用户在那笔交易里是买家；标签为“买家”则说明该用户是卖家。

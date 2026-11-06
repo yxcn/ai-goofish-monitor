@@ -3,6 +3,7 @@ from src.parsers import (
     ITEM_DESCRIPTION_TRUNCATED_SUFFIX,
     MAX_ITEM_DESCRIPTION_CHARS,
     parse_item_detail_extras,
+    parse_item_detail_facts,
 )
 
 
@@ -71,3 +72,35 @@ def test_keyword_rules_can_match_description_text():
 
     assert result["is_recommended"] is True
     assert result["matched_keywords"] == ["无拆修"]
+
+
+def test_item_detail_facts_come_from_item_and_seller():
+    # 字段名来自一次真实的 mtop.taobao.idle.pc.detail 返回
+    item_do = {"collectCnt": 6, "wantCnt": 11, "browseCnt": 275}
+    seller_do = {
+        "city": "淄博",
+        "publishCity": "淄博",
+        "lastVisitTime": "21分钟前来过",
+        "replyRatio24h": "100%",
+        "replyInterval": "3分钟",
+        "userRegDay": 932,
+    }
+    assert parse_item_detail_facts(item_do, seller_do) == {
+        "收藏数": 6,
+        "卖家所在城市": "淄博",
+        "卖家最近活跃": "21分钟前来过",
+        "卖家24小时回复率": "100%",
+        "卖家平均回复时长": "3分钟",
+    }
+
+
+def test_item_detail_facts_omit_missing_or_blank_fields():
+    assert parse_item_detail_facts({}, {}) == {}
+    assert parse_item_detail_facts(None, None) == {}
+    facts = parse_item_detail_facts(
+        {"collectCnt": "12"},
+        {"publishCity": " 深圳 ", "lastVisitTime": "", "replyRatio24h": None},
+    )
+    assert facts == {"收藏数": 12, "卖家所在城市": "深圳"}
+    assert parse_item_detail_facts({"collectCnt": True}, {}) == {}
+    assert parse_item_detail_facts({"collectCnt": "n/a"}, {}) == {}

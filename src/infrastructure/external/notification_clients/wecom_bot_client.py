@@ -6,7 +6,7 @@ from typing import Dict
 
 import requests
 
-from .base import NotificationClient, describe_popularity
+from .base import NotificationClient, describe_popularity, describe_seller, message_facts
 
 
 class WeComBotClient(NotificationClient):
@@ -36,16 +36,13 @@ class WeComBotClient(NotificationClient):
         if message.tags:
             price_line += " " + " · ".join(message.tags)
         markdown_lines.append(price_line)
-        popularity = describe_popularity(
-            {
-                "wants_count": message.wants_count,
-                "view_count": message.view_count,
-                "publish_time": message.publish_time,
-                "region": message.region,
-            }
-        )
+        facts = message_facts(message)
+        popularity = describe_popularity(facts)
         if popularity:
             markdown_lines.append(f"- 热度: {popularity}")
+        seller = describe_seller(facts)
+        if seller:
+            markdown_lines.append(f"- 卖家: {seller}")
         markdown_lines.append(f"- 原因: {message.reason}")
         if message.value_summary:
             markdown_lines.append(f"- 性价比: {message.value_summary}")

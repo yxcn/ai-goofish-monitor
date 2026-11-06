@@ -9,7 +9,7 @@ import requests
 
 from src.infrastructure.config.settings import DEFAULT_TELEGRAM_API_BASE_URL
 
-from .base import NotificationClient, describe_popularity
+from .base import NotificationClient, describe_popularity, describe_seller, message_facts
 
 
 class TelegramClient(NotificationClient):
@@ -92,16 +92,13 @@ class TelegramClient(NotificationClient):
         if message.tags:
             price_line += " · " + " · ".join(escape(tag) for tag in message.tags)
         lines.append(price_line)
-        popularity = describe_popularity(
-            {
-                "wants_count": message.wants_count,
-                "view_count": message.view_count,
-                "publish_time": message.publish_time,
-                "region": message.region,
-            }
-        )
+        facts = message_facts(message)
+        popularity = describe_popularity(facts)
         if popularity:
             lines.append(f"👀 {escape(popularity)}")
+        seller = describe_seller(facts)
+        if seller:
+            lines.append(f"👤 卖家: {escape(seller)}")
         lines.append(f"📝 原因: {escape(message.reason)}")
         if message.value_summary:
             lines.append(f"💹 性价比: {escape(message.value_summary)}")

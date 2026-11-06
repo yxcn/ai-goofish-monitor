@@ -43,7 +43,7 @@ const crawlTime = props.item.爬取时间
   ? formatDateTime(props.item.爬取时间, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
   : t('common.unknown')
 const matchScore = ai?.value_score ?? 0
-// 商品页上的那几项：标签（包邮/验货宝）、想要、浏览、发货地、发布时间；占位符（NaN、-）不显示
+// 商品页上的那几项：标签（包邮/验货宝）、想要、浏览、收藏、发货地、发布时间；占位符（NaN、-）不显示
 const listingTags = computed(() => Array.from(new Set((info.商品标签 ?? []).map((tag) => String(tag ?? '').trim()).filter(Boolean))))
 const toCount = (value: unknown): number | null => {
   if (value === null || value === undefined || value === '') return null
@@ -52,14 +52,30 @@ const toCount = (value: unknown): number | null => {
 }
 const wantsCount = computed(() => toCount(info['“想要”人数']))
 const viewCount = computed(() => toCount(info.浏览量))
+const favoriteCount = computed(() => toCount(info.收藏数))
 const publishTime = computed(() => {
   const raw = String(info.发布时间 ?? '').trim()
   if (!raw || raw === '未知时间') return ''
   return raw.replace(/^\d{4}-/, '')
 })
+// 发货地区是省份，详情页还给了卖家城市；两者都有且不重复时合成“山东 淄博”
 const region = computed(() => {
-  const raw = String(info.发货地区 ?? '').trim()
-  return raw && raw !== '地区未知' ? raw : ''
+  const rawProvince = String(info.发货地区 ?? '').trim()
+  const province = rawProvince && rawProvince !== '地区未知' ? rawProvince : ''
+  const city = String(info.卖家所在城市 ?? '').trim()
+  if (province && city && !province.includes(city) && !city.includes(province)) return `${province} ${city}`
+  return city || province
+})
+// 卖家活跃度：最近活跃（“21分钟前来过”）、24 小时回复率、平均回复时长
+const sellerFacts = computed(() => {
+  const parts: string[] = []
+  const lastActive = String(info.卖家最近活跃 ?? '').trim()
+  const replyRate = String(info.卖家24小时回复率 ?? '').trim()
+  const replyInterval = String(info.卖家平均回复时长 ?? '').trim()
+  if (lastActive) parts.push(lastActive)
+  if (replyRate) parts.push(t('results.card.replyRate', { rate: replyRate }))
+  if (replyInterval) parts.push(t('results.card.replyIn', { time: replyInterval }))
+  return parts
 })
 // 划线原价：占位符（暂无）或和现价相同时不显示
 const originalPrice = computed(() => {
@@ -68,7 +84,7 @@ const originalPrice = computed(() => {
   const digits = (text: string) => text.replace(/[^\d.]/g, '')
   return digits(raw) && digits(raw) === digits(String(info.当前售价 ?? '')) ? '' : raw
 })
-const hasListingFacts = computed(() => listingTags.value.length > 0 || wantsCount.value !== null || viewCount.value !== null || !!publishTime.value || !!region.value)
+const hasListingFacts = computed(() => listingTags.value.length > 0 || wantsCount.value !== null || viewCount.value !== null || favoriteCount.value !== null || !!publishTime.value || !!region.value)
 const isHidden = computed(() => props.item._effective_hidden === true || props.item._status === 'hidden')
 const isRuleHidden = computed(() => props.item._hidden_reason === 'rule')
 const canToggleBlock = computed(() => props.item._hidden_reason !== 'rule' && props.item._hidden_reason !== 'expired')
@@ -145,8 +161,13 @@ const expanded = ref(false)
         <Badge v-for="tag in listingTags" :key="tag" variant="secondary" class="px-1.5 py-0 text-[10px] font-medium bg-rose-50 text-rose-600 border border-rose-100">{{ tag }}</Badge>
         <span v-if="wantsCount !== null">{{ t('results.card.wants', { count: wantsCount }) }}</span>
         <span v-if="viewCount !== null">{{ t('results.card.views', { count: viewCount }) }}</span>
+        <span v-if="favoriteCount !== null">{{ t('results.card.favorites', { count: favoriteCount }) }}</span>
         <span v-if="region">{{ region }}</span>
         <span v-if="publishTime">{{ t('results.card.published', { time: publishTime }) }}</span>
+      </div>
+      <div v-if="sellerFacts.length" class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
+        <User class="w-3 h-3 text-slate-400" />
+        <span v-for="fact in sellerFacts" :key="fact">{{ fact }}</span>
       </div>
     </CardHeader>
 

@@ -47,6 +47,13 @@ class NotificationMessage:
     view_count: Optional[int] = None
     publish_time: Optional[str] = None
     region: Optional[str] = None
+    favorite_count: Optional[int] = None
+    # 卖家所在城市（比发货地区的省份细）
+    city: Optional[str] = None
+    # 卖家最近活跃，如 "21分钟前来过"
+    seller_last_active: Optional[str] = None
+    seller_reply_rate: Optional[str] = None
+    seller_reply_interval: Optional[str] = None
 
 
 def split_risk_tags(tags: Iterable | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -126,7 +133,7 @@ def _clean_text(value) -> Optional[str]:
 
 
 def listing_facts(product_data: Dict) -> dict:
-    """从商品信息里取页面上那几个展示字段：原价、标签、想要、浏览、发布时间、发货地。"""
+    """从商品信息里取页面上那几个展示字段：原价、标签、想要、浏览、收藏、发布时间、发货地、卖家活跃度。"""
     price = _clean_text(product_data.get("当前售价"))
     original_price = _clean_text(product_data.get("商品原价"))
     if original_price and price and _normalize_price(original_price) == _normalize_price(price):
@@ -141,20 +148,64 @@ def listing_facts(product_data: Dict) -> dict:
         "view_count": _as_int(product_data.get("浏览量")),
         "publish_time": _clean_text(product_data.get("发布时间")),
         "region": _clean_text(product_data.get("发货地区")),
+        "favorite_count": _as_int(product_data.get("收藏数")),
+        "city": _clean_text(product_data.get("卖家所在城市")),
+        "seller_last_active": _clean_text(product_data.get("卖家最近活跃")),
+        "seller_reply_rate": _clean_text(product_data.get("卖家24小时回复率")),
+        "seller_reply_interval": _clean_text(product_data.get("卖家平均回复时长")),
+    }
+
+
+def message_facts(message: "NotificationMessage") -> dict:
+    """把 NotificationMessage 上的商品页字段还原成 describe_* 用的 dict，各渠道渲染时共用。"""
+    return {
+        "wants_count": message.wants_count,
+        "view_count": message.view_count,
+        "favorite_count": message.favorite_count,
+        "publish_time": message.publish_time,
+        "region": message.region,
+        "city": message.city,
+        "seller_last_active": message.seller_last_active,
+        "seller_reply_rate": message.seller_reply_rate,
+        "seller_reply_interval": message.seller_reply_interval,
     }
 
 
 def describe_popularity(facts: dict) -> Optional[str]:
-    """如 '8 人想要 · 208 次浏览 · 11-05 12:29 发布 · 山东'。"""
+    """如 '8 人想要 · 208 次浏览 · 6 人收藏 · 11-05 12:29 发布 · 山东 淄博'。"""
     parts = []
     if facts.get("wants_count") is not None:
         parts.append(f"{facts['wants_count']} 人想要")
     if facts.get("view_count") is not None:
         parts.append(f"{facts['view_count']} 次浏览")
+    if facts.get("favorite_count") is not None:
+        parts.append(f"{facts['favorite_count']} 人收藏")
     if facts.get("publish_time"):
         parts.append(f"{_short_time(facts['publish_time'])} 发布")
-    if facts.get("region"):
-        parts.append(facts["region"])
+    location = describe_location(facts.get("region"), facts.get("city"))
+    if location:
+        parts.append(location)
+    return " · ".join(parts) if parts else None
+
+
+def describe_location(region: Optional[str], city: Optional[str]) -> Optional[str]:
+    """省份和城市都有时合成 '山东 淄博'；城市已经写在地区里（如 '上海'）就不重复。"""
+    region = (region or "").strip()
+    city = (city or "").strip()
+    if region and city and city not in region and region not in city:
+        return f"{region} {city}"
+    return city or region or None
+
+
+def describe_seller(facts: dict) -> Optional[str]:
+    """如 '21分钟前来过 · 24 小时回复率 100% · 平均 3分钟回复'。"""
+    parts = []
+    if facts.get("seller_last_active"):
+        parts.append(facts["seller_last_active"])
+    if facts.get("seller_reply_rate"):
+        parts.append(f"24 小时回复率 {facts['seller_reply_rate']}")
+    if facts.get("seller_reply_interval"):
+        parts.append(f"平均 {facts['seller_reply_interval']}回复")
     return " · ".join(parts) if parts else None
 
 
@@ -226,6 +277,7 @@ class NotificationClient(ABC):
         value_summary = str(analysis.get("value_summary") or "").strip() or None
         facts = listing_facts(product_data)
         popularity = describe_popularity(facts)
+        seller_line = describe_seller(facts)
 
         price_line = f"价格: {price}"
         if facts["original_price"]:
@@ -243,6 +295,8 @@ class NotificationClient(ABC):
         content_lines.append(price_line)
         if popularity:
             content_lines.append(f"热度: {popularity}")
+        if seller_line:
+            content_lines.append(f"卖家: {seller_line}")
         content_lines.append(f"原因: {reason}")
         if value_summary:
             content_lines.append(f"性价比: {value_summary}")
@@ -288,4 +342,9 @@ class NotificationClient(ABC):
             view_count=facts["view_count"],
             publish_time=facts["publish_time"],
             region=facts["region"],
+            favorite_count=facts["favorite_count"],
+            city=facts["city"],
+            seller_last_active=facts["seller_last_active"],
+            seller_reply_rate=facts["seller_reply_rate"],
+            seller_reply_interval=facts["seller_reply_interval"],
         )

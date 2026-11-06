@@ -34,6 +34,7 @@ from src.parsers import (
     _parse_user_items_data,
     calculate_reputation_from_ratings,
     parse_item_detail_extras,
+    parse_item_detail_facts,
     parse_ratings_data,
     parse_user_head_data,
 )
@@ -1155,6 +1156,8 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
 
                                 # 3. 提取商品描述正文和成色/品牌等属性，供 AI 判断电池、维修史等
                                 item_data.update(parse_item_detail_extras(item_do))
+                                # 4. 收藏数、卖家城市、最近活跃、回复率：商品页上有、搜索结果里没有
+                                item_data.update(parse_item_detail_facts(item_do, seller_do))
 
                                 item_data["“想要”人数"] = await safe_get(
                                     item_do,

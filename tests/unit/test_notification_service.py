@@ -305,6 +305,11 @@ def _listing_with_facts():
         "浏览量": "208",
         "发布时间": "2026-11-05 12:29",
         "发货地区": "山东",
+        "收藏数": "6",
+        "卖家所在城市": "淄博",
+        "卖家最近活跃": "21分钟前来过",
+        "卖家24小时回复率": "100%",
+        "卖家平均回复时长": "3分钟",
     }
 
 
@@ -312,10 +317,12 @@ def test_build_message_includes_listing_facts():
     message = _OkClient(enabled=True, pcurl_to_mobile=False)._build_message(_listing_with_facts(), "价格合适")
     assert message.original_price == "¥2300"
     assert message.tags == ("包邮", "验货宝")
-    assert (message.wants_count, message.view_count) == (8, 208)
+    assert (message.wants_count, message.view_count, message.favorite_count) == (8, 208, 6)
+    assert (message.city, message.seller_last_active) == ("淄博", "21分钟前来过")
     assert message.content.startswith(
         "价格: ¥1494（原价 ¥2300） 包邮 · 验货宝\n"
-        "热度: 8 人想要 · 208 次浏览 · 11-05 12:29 发布 · 山东\n"
+        "热度: 8 人想要 · 208 次浏览 · 6 人收藏 · 11-05 12:29 发布 · 山东 淄博\n"
+        "卖家: 21分钟前来过 · 24 小时回复率 100% · 平均 3分钟回复\n"
         "原因: 价格合适\n"
     )
 
@@ -324,11 +331,27 @@ def test_listing_facts_skip_placeholders_and_same_original_price():
     from src.infrastructure.external.notification_clients.base import listing_facts
 
     facts = listing_facts(
-        {"当前售价": "¥1494", "商品原价": "1494", "商品标签": [], "“想要”人数": "NaN", "浏览量": "-", "发布时间": "", "发货地区": "暂无"}
+        {
+            "当前售价": "¥1494", "商品原价": "1494", "商品标签": [], "“想要”人数": "NaN", "浏览量": "-",
+            "发布时间": "", "发货地区": "暂无", "收藏数": "-", "卖家所在城市": "", "卖家最近活跃": "暂无",
+        }
     )
     assert facts == {
         "original_price": None, "tags": (), "wants_count": None, "view_count": None, "publish_time": None, "region": None,
+        "favorite_count": None, "city": None, "seller_last_active": None, "seller_reply_rate": None, "seller_reply_interval": None,
     }
+
+
+def test_location_merges_province_and_city_without_repeating():
+    from src.infrastructure.external.notification_clients.base import describe_location, describe_seller
+
+    assert describe_location("山东", "淄博") == "山东 淄博"
+    assert describe_location("上海", "上海") == "上海"
+    assert describe_location(None, "淄博") == "淄博"
+    assert describe_location("山东", None) == "山东"
+    assert describe_location("", "") is None
+    assert describe_seller({"seller_last_active": "刚刚来过"}) == "刚刚来过"
+    assert describe_seller({}) is None
 
 
 def test_telegram_client_renders_listing_facts(monkeypatch):
@@ -349,4 +372,9 @@ def test_telegram_client_renders_listing_facts(monkeypatch):
     asyncio.run(client.send(_listing_with_facts(), "价格合适"))
 
     text = captured["json"]["text"]
-    assert "💰 价格: <b>¥1494</b> <s>¥2300</s> · 包邮 · 验货宝\n👀 8 人想要 · 208 次浏览 · 11-05 12:29 发布 · 山东\n📝 原因: 价格合适" in text
+    assert (
+        "💰 价格: <b>¥1494</b> <s>¥2300</s> · 包邮 · 验货宝\n"
+        "👀 8 人想要 · 208 次浏览 · 6 人收藏 · 11-05 12:29 发布 · 山东 淄博\n"
+        "👤 卖家: 21分钟前来过 · 24 小时回复率 100% · 平均 3分钟回复\n"
+        "📝 原因: 价格合适"
+    ) in text

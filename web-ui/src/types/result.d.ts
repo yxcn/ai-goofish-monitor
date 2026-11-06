@@ -14,6 +14,12 @@ export interface ProductInfo {
   "商品图片列表"?: string[];
   "商品主图链接"?: string;
   "浏览量"?: string | number;
+  "收藏数"?: string | number;
+  // 以下来自详情接口的 sellerDO，比搜索结果里的省份细
+  "卖家所在城市"?: string;
+  "卖家最近活跃"?: string;
+  "卖家24小时回复率"?: string;
+  "卖家平均回复时长"?: string;
 }
 
 export interface SellerInfo {
