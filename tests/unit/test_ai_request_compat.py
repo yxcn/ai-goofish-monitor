@@ -82,3 +82,48 @@ def test_json_output_error_not_triggered_by_unrelated_400():
 def test_json_output_error_not_triggered_without_body():
     err = Exception("some random 400 error")
     assert is_json_output_unsupported_error(err) is False
+
+
+OPENAI_MAX_TOKENS_ERROR = (
+    "Error code: 400 - {'error': {'message': \"Unsupported parameter: 'max_tokens' is not "
+    "supported with this model. Use 'max_completion_tokens' instead.\", 'type': "
+    "'invalid_request_error', 'param': 'max_tokens', 'code': 'unsupported_parameter'}}"
+)
+
+
+def test_max_tokens_error_detected_from_openai_message():
+    from src.services.ai_request_compat import (
+        is_json_output_unsupported_error,
+        is_max_tokens_unsupported_error,
+    )
+
+    err = Exception(OPENAI_MAX_TOKENS_ERROR)
+    assert is_max_tokens_unsupported_error(err) is True
+    # 不应误判成其他兼容性问题
+    assert is_temperature_unsupported_error(err) is False
+    assert is_json_output_unsupported_error(err) is False
+
+
+def test_max_tokens_error_detected_via_body_param():
+    from src.services.ai_request_compat import is_max_tokens_unsupported_error
+
+    class FakeError(Exception):
+        body = {"message": "Unsupported parameter", "param": "max_tokens"}
+
+    class FakeWrappedError(Exception):
+        body = {"error": {"message": "Unsupported parameter", "param": "max_tokens"}}
+
+    assert is_max_tokens_unsupported_error(FakeError("400")) is True
+    assert is_max_tokens_unsupported_error(FakeWrappedError("400")) is True
+    assert is_max_tokens_unsupported_error(Exception("max_tokens must be > 0")) is False
+
+
+def test_use_max_completion_tokens_renames_only_token_limit():
+    from src.services.ai_request_compat import use_max_completion_tokens
+
+    params = {"model": "x", "max_tokens": 4000, "temperature": 0.1}
+    result = use_max_completion_tokens(params)
+
+    assert result == {"model": "x", "max_completion_tokens": 4000, "temperature": 0.1}
+    assert params["max_tokens"] == 4000  # 原参数不被修改
+    assert use_max_completion_tokens({"model": "x"}) == {"model": "x"}

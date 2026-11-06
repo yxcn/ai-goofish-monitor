@@ -23,9 +23,11 @@ from src.services.ai_request_compat import (
     create_ai_response_async,
     is_chat_completions_api_unsupported_error,
     is_json_output_unsupported_error,
+    is_max_tokens_unsupported_error,
     is_responses_api_unsupported_error,
     is_temperature_unsupported_error,
     remove_temperature_param,
+    use_max_completion_tokens,
 )
 from src.services.ai_response_parser import (
     EmptyAIResponseError,
@@ -210,6 +212,7 @@ class AIClient:
             else enable_json_output
         )
         use_temperature = True
+        use_completion_tokens = False
         max_attempts = 4
 
         for attempt in range(max_attempts):
@@ -223,6 +226,8 @@ class AIClient:
             )
             if not use_temperature:
                 request_params = remove_temperature_param(request_params)
+            if use_completion_tokens:
+                request_params = use_max_completion_tokens(request_params)
 
             if self.settings.enable_thinking:
                 request_params["extra_body"] = {"enable_thinking": False}
@@ -265,6 +270,10 @@ class AIClient:
                     use_temperature = False
                     changed = True
                     print("当前模型不支持 temperature 参数，正在自动重试并移除该参数")
+                if not use_completion_tokens and is_max_tokens_unsupported_error(exc):
+                    use_completion_tokens = True
+                    changed = True
+                    print("当前模型不支持 max_tokens 参数，正在自动改用 max_completion_tokens 重试")
                 if changed and attempt < max_attempts - 1:
                     continue
                 raise

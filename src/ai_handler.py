@@ -42,9 +42,11 @@ from src.services.ai_request_compat import (
     create_ai_response_async,
     is_chat_completions_api_unsupported_error,
     is_json_output_unsupported_error,
+    is_max_tokens_unsupported_error,
     is_responses_api_unsupported_error,
     is_temperature_unsupported_error,
     remove_temperature_param,
+    use_max_completion_tokens,
 )
 from src.services.notification_service import build_notification_service
 from src.utils import convert_goofish_link, retry_on_failure
@@ -87,6 +89,8 @@ def _build_debug_request_summary(api_mode: str, request_params: dict) -> dict:
         summary["max_output_tokens"] = request_params["max_output_tokens"]
     if "max_tokens" in request_params:
         summary["max_tokens"] = request_params["max_tokens"]
+    if "max_completion_tokens" in request_params:
+        summary["max_completion_tokens"] = request_params["max_completion_tokens"]
     if "text" in request_params:
         summary["text"] = request_params["text"]
     if "response_format" in request_params:
@@ -373,6 +377,7 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
     api_mode = CHAT_COMPLETIONS_API_MODE
     use_response_format = ENABLE_RESPONSE_FORMAT
     use_temperature = True
+    use_completion_tokens = False
     for attempt in range(max_retries):
         try:
             # 根据重试次数调整参数
@@ -390,6 +395,8 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
             )
             if not use_temperature:
                 request_params = remove_temperature_param(request_params)
+            if use_completion_tokens:
+                request_params = use_max_completion_tokens(request_params)
 
             request_params = get_ai_request_params(**request_params)
 
@@ -465,6 +472,11 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
                 use_temperature = False
                 safe_print(
                     "   [AI分析] 当前模型不支持 temperature 参数，后续重试将自动禁用该参数。"
+                )
+            if not use_completion_tokens and is_max_tokens_unsupported_error(e):
+                use_completion_tokens = True
+                safe_print(
+                    "   [AI分析] 当前模型不支持 max_tokens 参数，后续重试将改用 max_completion_tokens。"
                 )
             if AI_DEBUG_MODE:
                 safe_print(f"\n--- [AI DEBUG] 第{attempt + 1}次尝试 EXCEPTION ---")

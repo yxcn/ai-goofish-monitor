@@ -168,6 +168,26 @@ def is_temperature_unsupported_error(error: Exception) -> bool:
     ) and any(marker in message for marker in UNSUPPORTED_TEMPERATURE_MARKERS)
 
 
+def is_max_tokens_unsupported_error(error: Exception) -> bool:
+    """识别要求用 max_completion_tokens 代替 max_tokens 的错误（如 OpenAI 新模型）。"""
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        details = body.get("error") if isinstance(body.get("error"), dict) else body
+        if details.get("param") == "max_tokens":
+            return True
+
+    message = str(error).lower()
+    return "max_tokens" in message and "max_completion_tokens" in message
+
+
+def use_max_completion_tokens(request_params: Dict[str, Any]) -> Dict[str, Any]:
+    """把 Chat Completions 的 max_tokens 改名为 max_completion_tokens。"""
+    next_params = dict(request_params)
+    if "max_tokens" in next_params:
+        next_params["max_completion_tokens"] = next_params.pop("max_tokens")
+    return next_params
+
+
 def remove_temperature_param(request_params: Dict[str, Any]) -> Dict[str, Any]:
     """移除 temperature 参数，适配不支持采样温度的模型网关。"""
     next_params = dict(request_params)

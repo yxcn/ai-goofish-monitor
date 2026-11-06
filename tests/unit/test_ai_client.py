@@ -337,3 +337,36 @@ def test_legacy_config_client_initializes_with_bracketed_no_proxy(tmp_path):
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_call_ai_switches_to_max_completion_tokens_when_model_rejects_max_tokens():
+    client = AIClient.__new__(AIClient)
+    client.settings = SimpleNamespace(
+        model_name="fake-model",
+        enable_response_format=False,
+        enable_thinking=False,
+    )
+    request_history = []
+
+    async def fake_create(**kwargs):
+        request_history.append(kwargs)
+        if len(request_history) == 1:
+            raise Exception(
+                "Error code: 400 - Unsupported parameter: 'max_tokens' is not supported "
+                "with this model. Use 'max_completion_tokens' instead."
+            )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok":true}'))]
+        )
+
+    client.client = _build_fake_client(fake_create)
+
+    response = asyncio.run(
+        client._call_ai([{"role": "user", "content": "hi"}], max_output_tokens=8192)
+    )
+
+    assert response == '{"ok":true}'
+    assert request_history[0]["max_tokens"] == 8192
+    assert "max_tokens" not in request_history[1]
+    assert request_history[1]["max_completion_tokens"] == 8192
+    assert request_history[1]["temperature"] == 0.1

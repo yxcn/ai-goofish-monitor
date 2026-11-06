@@ -21,7 +21,9 @@ from src.services.ai_request_compat import (
     build_ai_request_params,
     create_ai_response_sync,
     is_chat_completions_api_unsupported_error,
+    is_max_tokens_unsupported_error,
     is_responses_api_unsupported_error,
+    use_max_completion_tokens,
 )
 from src.services.ai_response_parser import extract_ai_response_content
 from src.services.notification_config_service import (
@@ -310,32 +312,33 @@ async def test_ai_settings(settings: dict):
         client = OpenAI(**client_params)
         messages = [{"role": "user", "content": AI_TEST_PROMPT}]
         api_mode = CHAT_COMPLETIONS_API_MODE
+        use_completion_tokens = False
+        response = None
 
-        try:
-            response = create_ai_response_sync(
-                client,
+        for attempt in range(3):
+            request_params = build_ai_request_params(
                 api_mode,
-                build_ai_request_params(
-                    api_mode,
-                    model=model_name,
-                    messages=messages,
-                    max_output_tokens=AI_TEST_MAX_OUTPUT_TOKENS,
-                ),
+                model=model_name,
+                messages=messages,
+                max_output_tokens=AI_TEST_MAX_OUTPUT_TOKENS,
             )
-        except Exception as exc:
-            if not is_chat_completions_api_unsupported_error(exc):
-                raise
-            api_mode = RESPONSES_API_MODE
-            response = create_ai_response_sync(
-                client,
-                api_mode,
-                build_ai_request_params(
-                    api_mode,
-                    model=model_name,
-                    messages=messages,
-                    max_output_tokens=AI_TEST_MAX_OUTPUT_TOKENS,
-                ),
-            )
+            if use_completion_tokens:
+                request_params = use_max_completion_tokens(request_params)
+            try:
+                response = create_ai_response_sync(client, api_mode, request_params)
+                break
+            except Exception as exc:
+                if (
+                    api_mode == CHAT_COMPLETIONS_API_MODE
+                    and is_chat_completions_api_unsupported_error(exc)
+                ):
+                    api_mode = RESPONSES_API_MODE
+                elif not use_completion_tokens and is_max_tokens_unsupported_error(exc):
+                    use_completion_tokens = True
+                else:
+                    raise
+                if attempt == 2:
+                    raise
 
         return {
             "success": True,
