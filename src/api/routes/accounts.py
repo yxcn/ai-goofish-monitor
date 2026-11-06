@@ -6,7 +6,7 @@ import os
 import re
 import aiofiles
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List
 from src.core.path_safety import validate_relative_dir
 from src.infrastructure.config.env_manager import env_manager
@@ -15,15 +15,17 @@ from src.infrastructure.config.env_manager import env_manager
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 ACCOUNT_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,50}$")
+# 账号登录态 JSON 上限；超过返回 422
+MAX_ACCOUNT_STATE_CHARS = 2 * 1024 * 1024
 
 
 class AccountCreate(BaseModel):
     name: str
-    content: str
+    content: str = Field(max_length=MAX_ACCOUNT_STATE_CHARS)
 
 
 class AccountUpdate(BaseModel):
-    content: str
+    content: str = Field(max_length=MAX_ACCOUNT_STATE_CHARS)
 
 
 def _strip_quotes(value: str) -> str:

@@ -74,26 +74,6 @@ def test_process_service_marks_task_stopped_when_process_exits(monkeypatch, tmp_
     asyncio.run(run_scenario())
 
 
-def test_process_service_reindexes_runtime_maps_after_delete():
-    service = ProcessService()
-    proc_a = object()
-    proc_c = object()
-    watcher_a = object()
-    watcher_c = object()
-
-    service.processes = {0: proc_a, 2: proc_c}
-    service.log_paths = {0: "a.log", 2: "c.log"}
-    service.task_names = {0: "A", 2: "C"}
-    service.exit_watchers = {0: watcher_a, 2: watcher_c}
-
-    service.reindex_after_delete(1)
-
-    assert service.processes == {0: proc_a, 1: proc_c}
-    assert service.log_paths == {0: "a.log", 1: "c.log"}
-    assert service.task_names == {0: "A", 1: "C"}
-    assert service.exit_watchers == {0: watcher_a, 1: watcher_c}
-
-
 def test_process_service_adds_debug_limit_arg_when_env_enabled(monkeypatch):
     monkeypatch.setenv("SPIDER_DEBUG_LIMIT", "1")
     service = ProcessService()
@@ -178,3 +158,63 @@ def test_resolve_cookie_path_reads_task_by_id_off_the_event_loop(monkeypatch, tm
 
     assert asyncio.run(service._resolve_cookie_path(9)) == "state/acc.json"
     assert calls == [9]
+
+
+def _patch_log_dir(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "src.services.process_service.build_task_log_path",
+        lambda task_id, _task_name: str(tmp_path / f"task-{task_id}.log"),
+    )
+
+
+def test_open_log_file_rotates_oversized_log_and_overwrites_previous_rotation(monkeypatch, tmp_path):
+    from src.services import process_service as module
+
+    _patch_log_dir(monkeypatch, tmp_path)
+    log_path = tmp_path / "task-1.log"
+    oversized = module.LOG_ROTATE_MAX_BYTES + 1
+    log_path.write_bytes(b"x" * oversized)
+    rotated = tmp_path / "task-1.log.1"
+    rotated.write_text("stale rotation", encoding="utf-8")
+
+    path, handle = ProcessService()._open_log_file(1, "t")
+    handle.write("new run\n")
+    handle.close()
+
+    assert path == str(log_path)
+    assert log_path.read_text(encoding="utf-8") == "new run\n"
+    assert rotated.stat().st_size == oversized  # 旧的 .1 被覆盖
+    assert not (tmp_path / "task-1.log.2").exists()
+
+
+def test_open_log_file_keeps_appending_to_small_log(monkeypatch, tmp_path):
+    from src.services import process_service as module
+
+    _patch_log_dir(monkeypatch, tmp_path)
+    log_path = tmp_path / "task-2.log"
+    log_path.write_bytes(b"x" * module.LOG_ROTATE_MAX_BYTES)  # 恰好等于阈值：不轮转
+
+    _path, handle = ProcessService()._open_log_file(2, "t")
+    handle.write("more")
+    handle.close()
+
+    assert log_path.stat().st_size == module.LOG_ROTATE_MAX_BYTES + 4
+    assert not (tmp_path / "task-2.log.1").exists()
+
+
+def test_spawn_uses_start_new_session_instead_of_preexec_fn(monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake_create_subprocess_exec(*_args, **kwargs):
+        captured.update(kwargs)
+        return FakeProcess(pid=1)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    service = ProcessService()
+    with open(tmp_path / "x.log", "a", encoding="utf-8") as handle:
+        asyncio.run(service._spawn_process(1, "t", handle))
+
+    assert "preexec_fn" not in captured
+    assert captured["start_new_session"] is (sys.platform != "win32")
+    assert captured["env"]["PYTHONUTF8"] == "1"

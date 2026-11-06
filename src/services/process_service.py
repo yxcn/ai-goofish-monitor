@@ -19,6 +19,8 @@ from src.utils import build_task_log_path
 
 STOP_TIMEOUT_SECONDS = 20
 SPIDER_DEBUG_LIMIT_ENV = "SPIDER_DEBUG_LIMIT"
+# 任务日志只追加不轮转会无限长大：启动子进程前超过这个大小就滚动为 <task>.log.1（覆盖旧的 .1）
+LOG_ROTATE_MAX_BYTES = 5 * 1024 * 1024
 LifecycleHook = Callable[[int], Awaitable[None] | None]
 
 
@@ -90,9 +92,23 @@ class ProcessService:
         self._cleanup_runtime(task_id, process)
         await self._invoke_hook(self._on_stopped, task_id)
 
+    def _rotate_log_if_needed(self, log_file_path: str) -> bool:
+        """日志超过 LOG_ROTATE_MAX_BYTES 时改名为 .1（覆盖旧的 .1）。返回是否发生了轮转。"""
+        try:
+            if os.path.getsize(log_file_path) <= LOG_ROTATE_MAX_BYTES:
+                return False
+            os.replace(log_file_path, f"{log_file_path}.1")
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            print(f"轮转任务日志失败，继续追加写入: {log_file_path} ({exc})")
+            return False
+
     def _open_log_file(self, task_id: int, task_name: str) -> tuple[str, TextIO]:
         os.makedirs("logs", exist_ok=True)
         log_file_path = build_task_log_path(task_id, task_name)
+        self._rotate_log_if_needed(log_file_path)
         log_file_handle = open(log_file_path, "a", encoding="utf-8")
         return log_file_path, log_file_handle
 
@@ -116,7 +132,6 @@ class ProcessService:
         task_name: str,
         log_file_handle: TextIO,
     ) -> asyncio.subprocess.Process:
-        preexec_fn = os.setsid if sys.platform != "win32" else None
         child_env = os.environ.copy()
         child_env["PYTHONIOENCODING"] = "utf-8"
         child_env["PYTHONUTF8"] = "1"
@@ -124,7 +139,9 @@ class ProcessService:
             *self._build_spawn_command(task_id, task_name),
             stdout=log_file_handle,
             stderr=log_file_handle,
-            preexec_fn=preexec_fn,
+            # 独立进程组，stop 时 killpg 能连带结束 playwright 子进程；
+            # preexec_fn=os.setsid 在多线程进程里不安全，用 start_new_session 代替（Windows 上无此概念）
+            start_new_session=sys.platform != "win32",
             env=child_env,
         )
 
@@ -298,24 +315,6 @@ class ProcessService:
         if watcher is None:
             return
         await asyncio.shield(watcher)
-
-    def reindex_after_delete(self, deleted_task_id: int) -> None:
-        """删除任务后同步重排运行时索引，避免任务下标漂移。"""
-        self.processes = self._reindex_mapping(self.processes, deleted_task_id)
-        self.log_paths = self._reindex_mapping(self.log_paths, deleted_task_id)
-        self.log_handles = self._reindex_mapping(self.log_handles, deleted_task_id)
-        self.task_names = self._reindex_mapping(self.task_names, deleted_task_id)
-        self.exit_watchers = self._reindex_mapping(self.exit_watchers, deleted_task_id)
-        self._start_locks = self._reindex_mapping(self._start_locks, deleted_task_id)
-
-    def _reindex_mapping(self, mapping: Dict[int, object], deleted_task_id: int) -> Dict[int, object]:
-        reindexed: Dict[int, object] = {}
-        for task_id, value in mapping.items():
-            if task_id == deleted_task_id:
-                continue
-            next_task_id = task_id - 1 if task_id > deleted_task_id else task_id
-            reindexed[next_task_id] = value
-        return reindexed
 
     async def stop_all(self) -> None:
         """停止所有任务进程"""

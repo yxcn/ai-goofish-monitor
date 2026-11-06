@@ -16,9 +16,18 @@ sys.path.insert(0, str(repo_root))
 
 from src.api import dependencies as deps
 from src.api.routes import tasks
+from src.infrastructure.persistence.sqlite_bootstrap import reset_bootstrap_state
 from src.infrastructure.persistence.sqlite_task_repository import SqliteTaskRepository
 from src.services.task_service import TaskService
 from src.services.task_generation_service import TaskGenerationService
+
+
+@pytest.fixture(autouse=True)
+def _fresh_sqlite_bootstrap():
+    # bootstrap_sqlite_storage() 每个库路径只跑一次 DDL；测试之间切目录/换库，标记要清掉
+    reset_bootstrap_state()
+    yield
+    reset_bootstrap_state()
 
 
 @pytest.fixture()
@@ -58,7 +67,6 @@ class FakeProcessService:
     def __init__(self):
         self.started = []
         self.stopped = []
-        self.reindexed = []
         self._on_started = None
         self._on_stopped = None
 
@@ -77,8 +85,6 @@ class FakeProcessService:
         if self._on_stopped:
             await self._on_stopped(task_id)
 
-    def reindex_after_delete(self, deleted_task_id: int):
-        self.reindexed.append(deleted_task_id)
 
 
 class FakeSchedulerService:

@@ -1,10 +1,5 @@
-import json
-import os
 import re
-import sys
 from typing import Awaitable, Callable, Optional
-
-import aiofiles
 
 from src.infrastructure.external.ai_client import AIClient
 
@@ -142,54 +137,3 @@ async def generate_criteria(
         raise
     finally:
         await _close_ai_client(ai_client, active_error)
-
-
-async def update_config_with_new_task(new_task: dict, config_file: str = "config.json"):
-    """
-    将一个新任务添加到指定的JSON配置文件中。
-    """
-    print(f"正在更新配置文件: {config_file}")
-    try:
-        # 读取现有配置
-        config_data = []
-        if os.path.exists(config_file):
-            async with aiofiles.open(config_file, 'r', encoding='utf-8') as f:
-                content = await f.read()
-                # 处理空文件的情况
-                if content.strip():
-                    try:
-                        config_data = json.loads(content)
-                        print(f"成功读取现有配置，当前任务数量: {len(config_data)}")
-                    except json.JSONDecodeError as e:
-                        print(f"解析配置文件失败，将创建新配置: {e}")
-                        config_data = []
-        else:
-            print(f"配置文件不存在，将创建新文件: {config_file}")
-
-        # 追加新任务
-        config_data.append(new_task)
-
-        # 写回配置文件
-        async with aiofiles.open(config_file, 'w', encoding='utf-8') as f:
-            await f.write(json.dumps(config_data, ensure_ascii=False, indent=2))
-            print(f"配置文件写入完成")
-
-        print(f"成功！新任务 '{new_task.get('task_name')}' 已添加到 {config_file} 并已启用。")
-        return True
-    except json.JSONDecodeError as e:
-        error_msg = f"错误: 配置文件 {config_file} 格式错误，无法解析: {e}"
-        sys.stderr.write(error_msg + "\n")
-        print(error_msg)
-        return False
-    except IOError as e:
-        error_msg = f"错误: 读写配置文件失败: {e}"
-        sys.stderr.write(error_msg + "\n")
-        print(error_msg)
-        return False
-    except Exception as e:
-        error_msg = f"错误: 更新配置文件时发生未知错误: {e}"
-        sys.stderr.write(error_msg + "\n")
-        print(error_msg)
-        import traceback
-        print(traceback.format_exc())
-        return False

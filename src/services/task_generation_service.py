@@ -4,7 +4,8 @@
 import asyncio
 from copy import deepcopy
 import threading
-from typing import Awaitable, Dict, Iterable, Optional
+import time
+from typing import Awaitable, Callable, Dict, Iterable, Optional
 from uuid import uuid4
 
 from src.domain.models.task import Task
@@ -19,15 +20,31 @@ DEFAULT_GENERATION_STEPS: tuple[tuple[str, str], ...] = (
     ("task", "创建任务记录"),
 )
 
+# 已完成/失败的作业保留给前端轮询用，但不能只增不删：最多留这么多个、最长留这么久
+MAX_FINISHED_JOBS = 50
+FINISHED_JOB_TTL_SECONDS = 3600
+
 
 class TaskGenerationService:
     """管理 AI 任务生成的后台作业状态"""
 
-    def __init__(self, step_specs: Iterable[tuple[str, str]] = DEFAULT_GENERATION_STEPS):
+    def __init__(
+        self,
+        step_specs: Iterable[tuple[str, str]] = DEFAULT_GENERATION_STEPS,
+        *,
+        max_finished_jobs: int = MAX_FINISHED_JOBS,
+        finished_job_ttl_seconds: float = FINISHED_JOB_TTL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self._step_specs = tuple(step_specs)
         self._jobs: Dict[str, TaskGenerationJob] = {}
         self._lock = threading.Lock()
         self._workers: set[threading.Thread] = set()
+        self._max_finished_jobs = max(0, int(max_finished_jobs))
+        self._finished_job_ttl_seconds = float(finished_job_ttl_seconds)
+        self._clock = clock
+        # job_id -> 完成/失败时刻（clock 的单位），只记终态作业；运行中的永不清理
+        self._finished_at: Dict[str, float] = {}
 
     async def create_job(self, task_name: str) -> TaskGenerationJob:
         job = TaskGenerationJob(
@@ -39,6 +56,7 @@ class TaskGenerationService:
             ],
         )
         with self._lock:
+            self._prune_finished_jobs()
             self._jobs[job.job_id] = job
             return deepcopy(job)
 
@@ -97,6 +115,7 @@ class TaskGenerationService:
             for step in job.steps:
                 if step.status != "failed":
                     step.status = "completed"
+            self._mark_finished(job_id)
             return deepcopy(job)
 
     async def fail(
@@ -117,7 +136,35 @@ class TaskGenerationService:
                 if step:
                     step.status = "failed"
                     step.message = error
+            self._mark_finished(job_id)
             return deepcopy(job)
+
+    def _mark_finished(self, job_id: str) -> None:
+        """调用方须持有 self._lock。"""
+        self._finished_at[job_id] = self._clock()
+        self._prune_finished_jobs()
+
+    def _prune_finished_jobs(self) -> None:
+        """调用方须持有 self._lock。按 TTL 和数量上限清理终态作业。"""
+        if not self._finished_at:
+            return
+        now = self._clock()
+        expired = [
+            job_id
+            for job_id, finished_at in self._finished_at.items()
+            if now - finished_at > self._finished_job_ttl_seconds
+        ]
+        for job_id in expired:
+            self._drop_job(job_id)
+        overflow = len(self._finished_at) - self._max_finished_jobs
+        if overflow > 0:
+            oldest_first = sorted(self._finished_at, key=self._finished_at.__getitem__)
+            for job_id in oldest_first[:overflow]:
+                self._drop_job(job_id)
+
+    def _drop_job(self, job_id: str) -> None:
+        self._finished_at.pop(job_id, None)
+        self._jobs.pop(job_id, None)
 
     def _require_job(self, job_id: str) -> TaskGenerationJob:
         job = self._jobs.get(job_id)

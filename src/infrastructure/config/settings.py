@@ -9,10 +9,42 @@ except ImportError:
     from pydantic import BaseSettings
     _USING_PYDANTIC_SETTINGS = False
 from pydantic import Field
+try:
+    from pydantic import field_validator
+except ImportError:  # pydantic v1 回退：没有 field_validator，沿用其内建布尔解析
+    def field_validator(*_args, **_kwargs):
+        return lambda func: func
 from typing import Optional
 import os
 
 DEFAULT_TELEGRAM_API_BASE_URL = "https://api.telegram.org"
+
+# 布尔环境变量的统一写法。config.py（爬虫子进程）、pydantic 配置模型、通知配置服务三处都走这里，
+# 避免 RUN_HEADLESS=0 在爬虫里仍是无头、ENABLE_THINKING=1 等于 false 之类的分歧。
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on", "y", "t"})
+_FALSE_VALUES = frozenset({"0", "false", "no", "off", "n", "f"})
+
+
+def parse_env_bool(value, default: bool) -> bool:
+    """解析布尔环境变量：接受 1/0、true/false、yes/no、on/off、y/n（大小写、首尾空白不敏感）；
+    None 或无法识别的写法返回 default。"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in _TRUE_VALUES:
+        return True
+    if text in _FALSE_VALUES:
+        return False
+    return default
+
+
+def _coerce_env_bool(cls, value, info):
+    """pydantic before-validator：布尔字段统一经 parse_env_bool，无法识别时回落到字段默认值。"""
+    field = cls.model_fields.get(info.field_name)
+    default = field.default if field is not None and isinstance(field.default, bool) else False
+    return parse_env_bool(value, default)
 
 
 def _env_field(default, env_name: str, **kwargs):
@@ -49,6 +81,11 @@ class AISettings(_EnvSettings):
     enable_thinking: bool = _env_field(False, "ENABLE_THINKING")
     skip_analysis: bool = _env_field(False, "SKIP_AI_ANALYSIS")
 
+    @field_validator("debug_mode", "enable_response_format", "enable_thinking", "skip_analysis", mode="before")
+    @classmethod
+    def _coerce_bools(cls, value, info):
+        return _coerce_env_bool(cls, value, info)
+
     def is_configured(self) -> bool:
         """检查AI是否已正确配置"""
         return bool(self.base_url and self.model_name)
@@ -77,6 +114,11 @@ class NotificationSettings(_EnvSettings):
     webhook_body: Optional[str] = _env_field(None, "WEBHOOK_BODY")
     pcurl_to_mobile: bool = _env_field(True, "PCURL_TO_MOBILE")
 
+    @field_validator("pcurl_to_mobile", mode="before")
+    @classmethod
+    def _coerce_bools(cls, value, info):
+        return _coerce_env_bool(cls, value, info)
+
     def has_any_notification_enabled(self) -> bool:
         """检查是否配置了任何通知服务"""
         return any([
@@ -97,13 +139,19 @@ class ScraperSettings(_EnvSettings):
     running_in_docker: bool = _env_field(False, "RUNNING_IN_DOCKER")
     state_file: str = _env_field("xianyu_state.json", "STATE_FILE")
 
+    @field_validator("run_headless", "login_is_edge", "running_in_docker", mode="before")
+    @classmethod
+    def _coerce_bools(cls, value, info):
+        return _coerce_env_bool(cls, value, info)
+
 
 class AppSettings(_EnvSettings):
     """应用主配置"""
     server_port: int = _env_field(8000, "SERVER_PORT")
     web_username: str = _env_field("admin", "WEB_USERNAME")
     web_password: str = _env_field("admin123", "WEB_PASSWORD")
-    task_log_retention_days: int = _env_field(7, "TASK_LOG_RETENTION_DAYS", ge=1)
+    # <1 表示不清理历史任务日志（cleanup_task_logs 会跳过），不要在这里用 ge=1 让 =0 在 import 阶段炸掉
+    task_log_retention_days: int = _env_field(7, "TASK_LOG_RETENTION_DAYS")
 
     # 文件路径配置
     config_file: str = "config.json"

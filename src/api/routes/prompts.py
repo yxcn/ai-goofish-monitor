@@ -5,12 +5,14 @@ import os
 import aiofiles
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 router = APIRouter(prefix="/api/prompts", tags=["prompts"])
 
 _PROMPTS_DIR = Path("prompts").resolve()
+# prompt 文本上限；超过返回 422
+MAX_PROMPT_CHARS = 256 * 1024
 
 
 def _safe_prompt_path(filename: str) -> Path:
@@ -25,7 +27,7 @@ def _safe_prompt_path(filename: str) -> Path:
 
 class PromptUpdate(BaseModel):
     """Prompt 更新模型"""
-    content: str
+    content: str = Field(max_length=MAX_PROMPT_CHARS)
 
 
 @router.get("")

@@ -9,6 +9,7 @@ from src.infrastructure.config.env_manager import env_manager
 from src.infrastructure.config.settings import (
     DEFAULT_TELEGRAM_API_BASE_URL,
     NotificationSettings,
+    parse_env_bool,
 )
 
 
@@ -329,7 +330,7 @@ def load_notification_settings() -> NotificationSettings:
             "webhook_content_type": _normalize_existing_text(env_manager.get_value("WEBHOOK_CONTENT_TYPE")) or "JSON",
             "webhook_query_parameters": _normalize_existing_text(env_manager.get_value("WEBHOOK_QUERY_PARAMETERS")),
             "webhook_body": _normalize_existing_text(env_manager.get_value("WEBHOOK_BODY")),
-            "pcurl_to_mobile": _env_bool(env_manager.get_value("PCURL_TO_MOBILE"), True),
+            "pcurl_to_mobile": parse_env_bool(env_manager.get_value("PCURL_TO_MOBILE"), True),
         }
     )
 
@@ -354,12 +355,6 @@ def _normalize_existing_text(value: str | None) -> str | None:
         return None
     text = str(value).strip()
     return text or None
-
-
-def _env_bool(value: str | None, default: bool) -> bool:
-    if value is None:
-        return default
-    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _normalize_notification_values(values: dict) -> dict:

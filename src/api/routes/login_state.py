@@ -5,15 +5,18 @@ import os
 import json
 import aiofiles
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 router = APIRouter(prefix="/api/login-state", tags=["login-state"])
 
+# 登录态 JSON 通常几十 KB；超过上限直接 422，别让任意大的请求体落盘
+MAX_LOGIN_STATE_CHARS = 2 * 1024 * 1024
+
 
 class LoginStateUpdate(BaseModel):
     """登录状态更新模型"""
-    content: str
+    content: str = Field(max_length=MAX_LOGIN_STATE_CHARS)
 
 
 @router.post("", response_model=dict)

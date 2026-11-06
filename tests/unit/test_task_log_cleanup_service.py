@@ -56,3 +56,21 @@ def test_cleanup_task_logs_skips_when_retention_is_invalid(tmp_path):
 
     assert removed == []
     assert task_log.exists()
+
+
+def test_cleanup_task_logs_also_removes_expired_rotated_logs(tmp_path):
+    logs_dir = tmp_path / "logs"
+    old_rotated = logs_dir / "old_task_1.log.1"
+    recent_rotated = logs_dir / "recent_task_2.log.1"
+    _write_file(old_rotated)
+    _write_file(recent_rotated)
+
+    now = datetime(2026, 3, 19, 12, 0, 0)
+    _set_mtime(old_rotated, datetime(2026, 3, 1, 0, 0, 0))
+    _set_mtime(recent_rotated, datetime(2026, 3, 18, 23, 0, 0))
+
+    removed = cleanup_task_logs(str(logs_dir), keep_days=7, now=now)
+
+    assert removed == [str(old_rotated)]
+    assert not old_rotated.exists()
+    assert recent_rotated.exists()

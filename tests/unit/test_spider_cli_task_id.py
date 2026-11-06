@@ -85,3 +85,37 @@ def test_task_id_and_task_name_are_mutually_exclusive(tmp_path, load_json_fixtur
 
     with pytest.raises(SystemExit):
         _run(spider_v2, monkeypatch, tmp_path, ["--config", str(config_path), "--task-id", "1", "--task-name", "x"])
+
+
+def test_tasks_loaded_from_sqlite_repository_are_plain_dicts(tmp_path, monkeypatch):
+    """不带 --config 时任务来自 SqliteTaskRepository：Task 模型要经 model_dump() 转成 dict。"""
+    from src.domain.models.task import Task
+
+    spider_v2 = _load_spider(monkeypatch)
+
+    class FakeRepository:
+        async def find_all(self):
+            return [
+                Task(
+                    id=0,
+                    task_name="Repo task",
+                    enabled=True,
+                    keyword="thinkpad",
+                    max_pages=1,
+                    personal_only=False,
+                    ai_prompt_base_file="prompts/base_prompt.txt",
+                    ai_prompt_criteria_file="prompts/x_criteria.txt",
+                    decision_mode="keyword",
+                    keyword_rules=["t14"],
+                )
+            ]
+
+    monkeypatch.setattr(spider_v2, "SqliteTaskRepository", FakeRepository)
+
+    captured = _run(spider_v2, monkeypatch, tmp_path, ["--task-id", "0"])
+
+    assert len(captured) == 1
+    assert isinstance(captured[0], dict)
+    assert captured[0]["id"] == 0
+    assert captured[0]["task_name"] == "Repo task"
+    assert captured[0]["keyword_rules"] == ["t14"]

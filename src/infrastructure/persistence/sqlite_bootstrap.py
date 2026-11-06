@@ -5,12 +5,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 from pathlib import Path
 
 from src.domain.models.task import Task
 from src.infrastructure.persistence.result_visibility import backfill_hidden_by_rule
-from src.infrastructure.persistence.sqlite_connection import init_schema, sqlite_connection
+from src.infrastructure.persistence.sqlite_connection import (
+    get_database_path,
+    init_schema,
+    sqlite_connection,
+)
 from src.infrastructure.persistence.storage_names import (
     build_result_filename,
     normalize_keyword_from_filename,
@@ -19,6 +24,9 @@ from src.infrastructure.persistence.storage_names import (
 
 
 BOOTSTRAP_LOCK = threading.Lock()
+# 已完成初始化的库（绝对路径）。每个读写入口都会调 bootstrap_sqlite_storage()，
+# 没有这个标记每次都要跑全部 DDL + 迁移检查
+_BOOTSTRAPPED_DB_PATHS: set[str] = set()
 LEGACY_CONFIG_FILE = "config.json"
 LEGACY_RESULT_DIR = "jsonl"
 LEGACY_PRICE_HISTORY_DIR = "price_history"
@@ -35,13 +43,31 @@ def bootstrap_sqlite_storage(
     legacy_result_dir: str = LEGACY_RESULT_DIR,
     legacy_price_history_dir: str = LEGACY_PRICE_HISTORY_DIR,
 ) -> None:
+    resolved_path = db_path or get_database_path()
+    key = os.path.abspath(resolved_path)
+    if _is_bootstrapped(key):
+        return
     with BOOTSTRAP_LOCK:
-        with sqlite_connection(db_path) as conn:
+        if _is_bootstrapped(key):
+            return
+        with sqlite_connection(resolved_path) as conn:
             init_schema(conn)
             _import_tasks_if_needed(conn, legacy_config_file)
             _import_results_if_needed(conn, legacy_result_dir)
             _import_price_snapshots_if_needed(conn, legacy_price_history_dir)
             _backfill_hidden_by_rule_if_needed(conn)
+        _BOOTSTRAPPED_DB_PATHS.add(key)
+
+
+def _is_bootstrapped(key: str) -> bool:
+    # 库文件被删掉（测试、手工清库）时要重新建表，所以标记之外还看文件是否还在
+    return key in _BOOTSTRAPPED_DB_PATHS and os.path.exists(key)
+
+
+def reset_bootstrap_state() -> None:
+    """测试用：清掉"已初始化"标记，下一次 bootstrap_sqlite_storage() 会重新跑 DDL 与迁移。"""
+    with BOOTSTRAP_LOCK:
+        _BOOTSTRAPPED_DB_PATHS.clear()
 
 
 def _table_is_empty(conn, table_name: str) -> bool:

@@ -4,10 +4,11 @@ import sys
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from src.infrastructure.external.ai_client import _sanitize_no_proxy_env
+from src.infrastructure.config.settings import parse_env_bool
+from src.infrastructure.external.ai_client import _sanitize_no_proxy_env, redact_url_userinfo  # noqa: F401
 from src.services.ai_request_compat import AIRuntimeLimits
 
-# --- AI & Notification Configuration ---
+
 load_dotenv(interpolate=False)  # 不展开 ${...}：WEBHOOK_BODY 之类的模板占位符要原样保留
 
 # --- File Paths & Directories ---
@@ -41,14 +42,14 @@ WEBHOOK_HEADERS = os.getenv("WEBHOOK_HEADERS")
 WEBHOOK_CONTENT_TYPE = os.getenv("WEBHOOK_CONTENT_TYPE", "JSON").upper()
 WEBHOOK_QUERY_PARAMETERS = os.getenv("WEBHOOK_QUERY_PARAMETERS")
 WEBHOOK_BODY = os.getenv("WEBHOOK_BODY")
-PCURL_TO_MOBILE = os.getenv("PCURL_TO_MOBILE", "false").lower() == "true"
-RUN_HEADLESS = os.getenv("RUN_HEADLESS", "true").lower() != "false"
-LOGIN_IS_EDGE = os.getenv("LOGIN_IS_EDGE", "false").lower() == "true"
-RUNNING_IN_DOCKER = os.getenv("RUNNING_IN_DOCKER", "false").lower() == "true"
-AI_DEBUG_MODE = os.getenv("AI_DEBUG_MODE", "false").lower() == "true"
-SKIP_AI_ANALYSIS = os.getenv("SKIP_AI_ANALYSIS", "false").lower() == "true"
-ENABLE_THINKING = os.getenv("ENABLE_THINKING", "false").lower() == "true"
-ENABLE_RESPONSE_FORMAT = os.getenv("ENABLE_RESPONSE_FORMAT", "true").lower() == "true"
+# 布尔开关统一用 parse_env_bool：1/0、true/false、yes/no、on/off 都认，和 pydantic 配置模型保持一致
+RUN_HEADLESS = parse_env_bool(os.getenv("RUN_HEADLESS"), True)
+LOGIN_IS_EDGE = parse_env_bool(os.getenv("LOGIN_IS_EDGE"), False)
+RUNNING_IN_DOCKER = parse_env_bool(os.getenv("RUNNING_IN_DOCKER"), False)
+AI_DEBUG_MODE = parse_env_bool(os.getenv("AI_DEBUG_MODE"), False)
+SKIP_AI_ANALYSIS = parse_env_bool(os.getenv("SKIP_AI_ANALYSIS"), False)
+ENABLE_THINKING = parse_env_bool(os.getenv("ENABLE_THINKING"), False)
+ENABLE_RESPONSE_FORMAT = parse_env_bool(os.getenv("ENABLE_RESPONSE_FORMAT"), True)
 
 # --- AI 超时 / 重试 / 图片限制 ---
 # AI_REQUEST_TIMEOUT_SECONDS      单次请求超时（默认 120s；SDK 默认 600s 太长）
@@ -82,7 +83,7 @@ else:
         # 旧客户端和 AIClient 必须在创建前共用同一套 NO_PROXY 清理。
         _sanitize_no_proxy_env()
         if PROXY_URL:
-            print(f"正在为AI请求使用HTTP/S代理: {PROXY_URL}")
+            print(f"正在为AI请求使用HTTP/S代理: {redact_url_userinfo(PROXY_URL)}")
             # httpx 会自动从环境变量中读取代理设置
             os.environ['HTTP_PROXY'] = PROXY_URL
             os.environ['HTTPS_PROXY'] = PROXY_URL

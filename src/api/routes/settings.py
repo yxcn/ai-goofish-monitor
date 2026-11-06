@@ -2,6 +2,7 @@
 设置管理路由
 """
 import asyncio
+import importlib
 import os
 from typing import Optional
 
@@ -21,7 +22,6 @@ from src.infrastructure.config.env_manager import env_manager
 from src.infrastructure.config.settings import (
     AISettings,
     reload_settings,
-    scraper_settings,
 )
 from src.services.ai_request_compat import (
     CHAT_COMPLETIONS_API_MODE,
@@ -47,6 +47,10 @@ from src.services.notification_config_service import (
 from src.services.notification_service import build_notification_service
 from src.services.process_service import ProcessService
 
+
+# reload_settings() 会重绑 settings 模块里的 scraper_settings 全局；from-import 拿到的是陈旧对象，
+# 这里持有模块本身，每次经属性取最新实例（from ...config import settings 拿到的是对象不是模块，所以用 importlib）
+_settings_module = importlib.import_module("src.infrastructure.config.settings")
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 AI_TEST_PROMPT = "Reply with OK only."
@@ -255,8 +259,8 @@ async def get_system_status(
     return {
         "ai_configured": ai_settings.is_configured(),
         "notification_configured": notification_settings.has_any_notification_enabled(),
-        "headless_mode": scraper_settings.run_headless,
-        "running_in_docker": scraper_settings.running_in_docker,
+        "headless_mode": _settings_module.scraper_settings.run_headless,
+        "running_in_docker": _settings_module.scraper_settings.running_in_docker,
         "scraper_running": len(running_task_ids) > 0,
         "running_task_ids": running_task_ids,
         "login_state_file": {

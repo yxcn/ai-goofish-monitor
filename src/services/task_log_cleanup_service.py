@@ -25,7 +25,8 @@ def cleanup_task_logs(
     cutoff = current_time - timedelta(days=keep_days)
     removed_files: list[str] = []
 
-    for path in root.glob("*.log"):
+    # ProcessService 把超大的日志滚动成 <task>.log.1，一起按 mtime 清理
+    for path in (*root.glob("*.log"), *root.glob("*.log.1")):
         if not path.is_file():
             continue
         try:
