@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sys
 import random
 import re
 import tempfile
@@ -61,7 +62,7 @@ from src.services.price_history_service import (
     load_sold_listings,
     record_market_snapshots,
 )
-from src.services.result_storage_service import load_processed_link_keys
+from src.services.result_storage_service import load_processed_link_keys, mark_notification_status
 from src.services.seller_profile_cache import SellerProfileCache
 from src.attribute_rules import normalize_attribute_rules
 from src.title_filter import (
@@ -81,6 +82,39 @@ class RiskControlError(Exception):
 
 class LoginRequiredError(Exception):
     """Raised when Goofish redirects to the passport/mini_login flow."""
+
+
+class ItemDetailUnavailable(Exception):
+    """详情接口没有返回商品数据（ret 非 SUCCESS 或 itemDO 为空）。
+
+    这种商品本次不落库、不标记已处理，下次运行会重新抓；
+    否则登录态过期时整批商品会以空数据落库并永久被"已存在，跳过"。
+    """
+
+
+LOGIN_EXPIRED_RET_MARKERS = (
+    "FAIL_SYS_TOKEN",
+    "FAIL_SYS_SESSION_EXPIRED",
+    "NEED_LOGIN",
+    "LOGIN_REQUIRED",
+    "FAIL_SYS_ILLEGAL_ACCESS",
+)
+
+
+def classify_detail_ret(ret_values) -> str:
+    """把 mtop 的 ret 列表归为 ok / risk_control / login_expired / failed。"""
+    if ret_values is None:
+        return "failed"
+    values = ret_values if isinstance(ret_values, (list, tuple)) else [ret_values]
+    texts = [str(v) for v in values if v is not None]
+    if any(t.startswith("SUCCESS") for t in texts):
+        return "ok"
+    joined = " ".join(texts)
+    if "FAIL_SYS_USER_VALIDATE" in joined:
+        return "risk_control"
+    if any(marker in joined for marker in LOGIN_EXPIRED_RET_MARKERS):
+        return "login_expired"
+    return "failed"
 
 
 FAILURE_GUARD = FailureGuard()
@@ -687,6 +721,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 ai_analyzer=get_ai_analysis,
                 notifier=send_ntfy_notification,
                 saver=save_to_jsonl,
+                notification_status_writer=mark_notification_status,
             )
 
             # 增强反检测脚本（模拟真实移动设备）
@@ -1124,6 +1159,17 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                 seller_do = await safe_get(
                                     detail_json, "data", "sellerDO", default={}
                                 )
+                                ret_status = classify_detail_ret(
+                                    await safe_get(detail_json, "ret", default=[])
+                                )
+                                if ret_status == "login_expired":
+                                    raise LoginRequiredError(
+                                        f"详情接口返回登录态失效: {ret_string}"
+                                    )
+                                if ret_status != "ok" or not item_do:
+                                    raise ItemDetailUnavailable(
+                                        f"详情接口未返回商品数据 (ret={ret_string or '空'})，本次不记录，下次运行重新抓取"
+                                    )
 
                                 reg_days_raw = await safe_get(
                                     seller_do, "userRegDay", default=0
@@ -1246,6 +1292,11 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
 
                         except PlaywrightTimeoutError:
                             print(f"   错误: 访问商品详情页或等待API响应超时。")
+                        except ItemDetailUnavailable as e:
+                            print(f"   跳过: {e}")
+                        except (RiskControlError, LoginRequiredError):
+                            # 风控 / 登录失效必须终止整个任务，不能被下面的兜底 except 吞掉继续下一个商品
+                            raise
                         except Exception as e:
                             print(f"   错误: 处理商品详情时发生未知错误: {e}")
                         finally:
@@ -1270,6 +1321,8 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
             except asyncio.CancelledError:
                 log_time("收到取消信号，正在终止当前爬虫任务...")
                 raise
+            except (RiskControlError, LoginRequiredError):
+                raise
             except Exception as e:
                 if type(e).__name__ == "TargetClosedError":
                     log_time("浏览器已关闭，忽略后续异常（可能是任务被停止）。")
@@ -1288,7 +1341,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                     log_time(f"标题预筛选跳过了 {title_filtered_count} 个商品。")
                 log_time("任务执行完毕，浏览器将在5秒后自动关闭...")
                 await asyncio.sleep(5)
-                if debug_limit:
+                if debug_limit and sys.stdin.isatty():
                     input("按回车键关闭浏览器...")
                 await browser.close()
 
