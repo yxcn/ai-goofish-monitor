@@ -31,6 +31,9 @@ SORT_COLUMN_MAP = {
     "keyword_hit_count": "keyword_hit_count",
 }
 
+# 结果的人工处理状态（结果页收件箱）：new 未处理 / contacted 已联系 / excluded 已排除 / bought 已购买
+REVIEW_STATUSES = ("new", "contacted", "excluded", "bought")
+
 
 # raw_json 里 ai_analysis.error 非空 = AI 调用失败的占位记录（json_valid 守卫避免坏 JSON 让整条查询报错）
 _AI_ERROR_ROW_SQL = (
@@ -87,6 +90,8 @@ def _build_query_conditions(
     ai_recommended_only: bool,
     keyword_recommended_only: bool,
     include_hidden: bool,
+    review_statuses: list[str] | None = None,
+    recommended: bool | None = None,
 ) -> tuple[str, list]:
     conditions = ["result_filename = ?"]
     params: list = [filename]
@@ -98,6 +103,12 @@ def _build_query_conditions(
         conditions.append("is_recommended = 1")
         conditions.append("analysis_source = ?")
         params.append("keyword")
+    if recommended is not None:
+        conditions.append("is_recommended = 1" if recommended else "is_recommended = 0")
+    if review_statuses:
+        placeholders = ", ".join("?" for _ in review_statuses)
+        conditions.append(f"review_status IN ({placeholders})")
+        params.extend(review_statuses)
     if not include_hidden:
         conditions.append(VISIBLE_ROW_SQL)
     return " AND ".join(conditions), params
@@ -113,7 +124,14 @@ def _load_blacklist_keywords_from_conn(conn, filename: str) -> list[str]:
     return load_blacklist_keywords(conn, filename)
 
 
-def _decorate_record_visibility(record: dict, status: str | None, blacklist_keywords: list[str]) -> dict:
+def _decorate_record_visibility(
+    record: dict,
+    status: str | None,
+    blacklist_keywords: list[str],
+    *,
+    review_status: str | None = None,
+    reviewed_at: str | None = None,
+) -> dict:
     matched_keywords = match_blacklist_keywords(record, blacklist_keywords)
     hidden_reason = None
     if status == "expired":
@@ -127,6 +145,8 @@ def _decorate_record_visibility(record: dict, status: str | None, blacklist_keyw
     record["_matched_blacklist_keywords"] = matched_keywords
     record["_hidden_reason"] = hidden_reason
     record["_effective_hidden"] = hidden_reason is not None
+    record["_review_status"] = str(review_status or "new")
+    record["_reviewed_at"] = str(reviewed_at) if reviewed_at else None
     return record
 
 
@@ -140,7 +160,15 @@ def _decorate_rows(rows, blacklist_keywords: list[str]) -> list[dict]:
         record = _parse_raw_record(str(row["raw_json"]), status=row["status"])
         if record is None:
             continue
-        records.append(_decorate_record_visibility(record, row["status"], blacklist_keywords))
+        records.append(
+            _decorate_record_visibility(
+                record,
+                row["status"],
+                blacklist_keywords,
+                review_status=row["review_status"],
+                reviewed_at=row["reviewed_at"],
+            )
+        )
     return records
 
 
@@ -155,6 +183,8 @@ def _load_filtered_records_from_conn(
     include_hidden: bool,
     limit: int | None = None,
     offset: int = 0,
+    review_statuses: list[str] | None = None,
+    recommended: bool | None = None,
 ) -> list[dict]:
     """可见性过滤与分页都在 SQL 里完成，只对返回的行做 json.loads。"""
     where_clause, params = _build_query_conditions(
@@ -162,10 +192,12 @@ def _load_filtered_records_from_conn(
         ai_recommended_only=ai_recommended_only,
         keyword_recommended_only=keyword_recommended_only,
         include_hidden=include_hidden,
+        review_statuses=review_statuses,
+        recommended=recommended,
     )
     order_clause = _sort_expression(sort_by, sort_order)
     sql = f"""
-        SELECT raw_json, status
+        SELECT raw_json, status, review_status, reviewed_at
         FROM result_items
         WHERE {where_clause}
         ORDER BY {order_clause}
@@ -185,12 +217,16 @@ def _count_filtered_records_from_conn(
     ai_recommended_only: bool,
     keyword_recommended_only: bool,
     include_hidden: bool,
+    review_statuses: list[str] | None = None,
+    recommended: bool | None = None,
 ) -> int:
     where_clause, params = _build_query_conditions(
         filename=filename,
         ai_recommended_only=ai_recommended_only,
         keyword_recommended_only=keyword_recommended_only,
         include_hidden=include_hidden,
+        review_statuses=review_statuses,
+        recommended=recommended,
     )
     row = conn.execute(
         f"SELECT COUNT(*) AS n FROM result_items WHERE {where_clause}",
@@ -384,6 +420,8 @@ async def query_result_records(
     page: int,
     limit: int,
     include_hidden: bool = False,
+    review_statuses: list[str] | None = None,
+    recommended: bool | None = None,
 ) -> tuple[int, list[dict]]:
     return await asyncio.to_thread(
         _query_result_records_sync,
@@ -395,6 +433,8 @@ async def query_result_records(
         page,
         limit,
         include_hidden,
+        review_statuses=review_statuses,
+        recommended=recommended,
     )
 
 
@@ -407,6 +447,8 @@ def _query_result_records_sync(
     page: int,
     limit: int,
     include_hidden: bool,
+    review_statuses: list[str] | None = None,
+    recommended: bool | None = None,
 ) -> tuple[int, list[dict]]:
     bootstrap_sqlite_storage()
     offset = max(page - 1, 0) * limit
@@ -417,6 +459,8 @@ def _query_result_records_sync(
             ai_recommended_only=ai_recommended_only,
             keyword_recommended_only=keyword_recommended_only,
             include_hidden=include_hidden,
+            review_statuses=review_statuses,
+            recommended=recommended,
         )
         records = _load_filtered_records_from_conn(
             conn,
@@ -428,6 +472,8 @@ def _query_result_records_sync(
             include_hidden=include_hidden,
             limit=limit,
             offset=offset,
+            review_statuses=review_statuses,
+            recommended=recommended,
         )
     return total, records
 
@@ -440,6 +486,8 @@ async def load_all_result_records(
     sort_by: str,
     sort_order: str,
     include_hidden: bool = False,
+    review_statuses: list[str] | None = None,
+    recommended: bool | None = None,
 ) -> list[dict]:
     return await asyncio.to_thread(
         _load_all_result_records_sync,
@@ -449,6 +497,8 @@ async def load_all_result_records(
         sort_by,
         sort_order,
         include_hidden,
+        review_statuses=review_statuses,
+        recommended=recommended,
     )
 
 
@@ -459,6 +509,8 @@ def _load_all_result_records_sync(
     sort_by: str,
     sort_order: str,
     include_hidden: bool,
+    review_statuses: list[str] | None = None,
+    recommended: bool | None = None,
 ) -> list[dict]:
     bootstrap_sqlite_storage()
     with sqlite_connection() as conn:
@@ -470,6 +522,8 @@ def _load_all_result_records_sync(
             sort_by=sort_by,
             sort_order=sort_order,
             include_hidden=include_hidden,
+            review_statuses=review_statuses,
+            recommended=recommended,
         )
 
 
@@ -493,7 +547,7 @@ def _load_latest_visible_record(conn, filename: str, *, recommended_only: bool) 
         conditions.append("is_recommended = 1")
     row = conn.execute(
         f"""
-        SELECT raw_json, status
+        SELECT raw_json, status, review_status, reviewed_at
         FROM result_items
         WHERE {" AND ".join(conditions)}
         ORDER BY crawl_time DESC, id DESC
@@ -506,7 +560,13 @@ def _load_latest_visible_record(conn, filename: str, *, recommended_only: bool) 
     record = _parse_raw_record(str(row["raw_json"]), status=row["status"])
     if record is None:
         return None
-    return _decorate_record_visibility(record, row["status"], _load_blacklist_keywords_from_conn(conn, filename))
+    return _decorate_record_visibility(
+        record,
+        row["status"],
+        _load_blacklist_keywords_from_conn(conn, filename),
+        review_status=row["review_status"],
+        reviewed_at=row["reviewed_at"],
+    )
 
 
 def _build_summary_from_aggregate(conn, filename: str, aggregate) -> dict | None:
@@ -595,6 +655,87 @@ def _update_item_status_sync(filename: str, item_id: str, status: str) -> bool:
         )
         conn.commit()
         return cursor.rowcount > 0
+
+
+async def update_item_review_status(filename: str, item_id: str, review_status: str) -> dict | None:
+    """更新商品的人工处理状态；返回新状态与处理时间，没有匹配的商品时返回 None。"""
+    if review_status not in REVIEW_STATUSES:
+        raise ValueError(f"review_status must be one of {REVIEW_STATUSES}")
+    return await asyncio.to_thread(_update_item_review_status_sync, filename, item_id, review_status)
+
+
+@retry_on_lock
+def _update_item_review_status_sync(filename: str, item_id: str, review_status: str) -> dict | None:
+    bootstrap_sqlite_storage()
+    # 设回 new 等于"还没处理"，处理时间一并清掉
+    reviewed_at = None if review_status == "new" else datetime.now().isoformat(timespec="seconds")
+    with sqlite_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE result_items SET review_status = ?, reviewed_at = ?"
+            " WHERE result_filename = ? AND item_id = ?",
+            (review_status, reviewed_at, filename, item_id),
+        )
+        conn.commit()
+        matched = cursor.rowcount > 0
+    if not matched:
+        return None
+    return {"review_status": review_status, "reviewed_at": reviewed_at}
+
+
+# 收件箱 = 推荐且还没处理；未推荐桶只算还没处理的，处理过的按处理状态归桶
+_REVIEW_SUMMARY_AGGREGATE_SQL = """
+    COUNT(*) AS total_count,
+    COALESCE(SUM(CASE WHEN is_recommended = 1 AND review_status = 'new' THEN 1 ELSE 0 END), 0) AS inbox_count,
+    COALESCE(SUM(CASE WHEN is_recommended = 0 AND review_status = 'new' THEN 1 ELSE 0 END), 0)
+        AS not_recommended_count,
+    COALESCE(SUM(CASE WHEN review_status = 'contacted' THEN 1 ELSE 0 END), 0) AS contacted_count,
+    COALESCE(SUM(CASE WHEN review_status = 'excluded' THEN 1 ELSE 0 END), 0) AS excluded_count,
+    COALESCE(SUM(CASE WHEN review_status = 'bought' THEN 1 ELSE 0 END), 0) AS bought_count
+"""
+_REVIEW_SUMMARY_KEYS = ("inbox", "not_recommended", "contacted", "excluded", "bought", "total")
+
+
+async def load_review_summary(filename: str) -> dict:
+    return await asyncio.to_thread(_load_review_summary_sync, filename)
+
+
+def _load_review_summary_sync(filename: str) -> dict:
+    """单个结果文件可见记录按处理状态分桶计数，一条聚合查询。"""
+    bootstrap_sqlite_storage()
+    with sqlite_connection() as conn:
+        row = conn.execute(
+            f"""
+            SELECT {_REVIEW_SUMMARY_AGGREGATE_SQL}
+            FROM result_items
+            WHERE result_filename = ? AND {VISIBLE_ROW_SQL}
+            """,
+            (filename,),
+        ).fetchone()
+    return {key: int(row[f"{key}_count"] or 0) if row else 0 for key in _REVIEW_SUMMARY_KEYS}
+
+
+_INBOX_ROW_SQL = f"{VISIBLE_ROW_SQL} AND is_recommended = 1 AND review_status = 'new'"
+
+
+async def load_inbox_counts() -> dict:
+    return await asyncio.to_thread(_load_inbox_counts_sync)
+
+
+def _load_inbox_counts_sync() -> dict:
+    """所有结果文件的收件箱数量：总数 + 按文件分布（侧栏角标用），只算可见行。"""
+    bootstrap_sqlite_storage()
+    with sqlite_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT result_filename, COUNT(*) AS n
+            FROM result_items
+            WHERE {_INBOX_ROW_SQL}
+            GROUP BY result_filename
+            ORDER BY result_filename
+            """
+        ).fetchall()
+    files = {str(row["result_filename"]): int(row["n"] or 0) for row in rows}
+    return {"count": sum(files.values()), "files": files}
 
 
 async def load_result_blacklist_keywords(filename: str) -> list[str]:

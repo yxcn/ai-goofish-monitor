@@ -414,3 +414,146 @@ def test_results_blacklist_rules_hide_items_from_view_and_insights(tmp_path, mon
     assert download_resp.status_code == 200
     assert "MacBook Air Intel i5 8+256" in download_resp.text
     assert "MacBook Pro Intel 13寸" in download_resp.text
+
+
+def _review_record(keyword: str, item_id: str, title: str, *, crawl_time: str, recommended: bool) -> dict:
+    return {
+        "爬取时间": crawl_time,
+        "搜索关键字": keyword,
+        "任务名称": f"{keyword} 任务",
+        "商品信息": {
+            "商品ID": item_id,
+            "商品标题": title,
+            "商品链接": f"https://www.goofish.com/item?id={item_id}",
+            "当前售价": "¥1000",
+            "发布时间": "2026-01-03 08:30",
+        },
+        "卖家信息": {"卖家昵称": "卖家"},
+        "ai_analysis": {"analysis_source": "ai", "is_recommended": recommended, "reason": "r"},
+    }
+
+
+def _review_client(tmp_path, monkeypatch, *, with_other_file: bool) -> TestClient:
+    monkeypatch.chdir(tmp_path)
+    jsonl_dir = tmp_path / "jsonl"
+    jsonl_dir.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(jsonl_dir / "demo_full_data.jsonl", [
+        _review_record("demo", "3001", "Demo A", crawl_time="2026-01-03T09:00:00", recommended=True),
+        _review_record("demo", "3002", "Demo B", crawl_time="2026-01-03T09:05:00", recommended=True),
+        _review_record("demo", "3003", "Demo C", crawl_time="2026-01-03T09:10:00", recommended=False),
+    ])
+    if with_other_file:
+        _write_jsonl(jsonl_dir / "other_full_data.jsonl", [
+            _review_record("other", "4001", "Other A", crawl_time="2026-01-03T09:00:00", recommended=True),
+        ])
+    app = FastAPI()
+    app.include_router(results.router)
+    return TestClient(app)
+
+
+def _item_ids(payload: dict) -> list[str]:
+    return [item["商品信息"]["商品ID"] for item in payload["items"]]
+
+
+def test_results_review_inbox_flow(tmp_path, monkeypatch):
+    client = _review_client(tmp_path, monkeypatch, with_other_file=True)
+
+    # inbox-count 不能被 /{filename} 吃掉，且跨文件统计
+    resp = client.get("/api/results/inbox-count")
+    assert resp.status_code == 200
+    assert resp.json() == {"count": 3, "files": {"demo_full_data.jsonl": 2, "other_full_data.jsonl": 1}}
+
+    resp = client.get("/api/results/demo_full_data.jsonl")
+    assert resp.status_code == 200
+    assert {item["_review_status"] for item in resp.json()["items"]} == {"new"}
+    assert all(item["_reviewed_at"] is None for item in resp.json()["items"])
+
+    resp = client.patch(
+        "/api/results/demo_full_data.jsonl/items/3001/review", json={"review_status": "contacted"}
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["message"] == "已更新" and payload["review_status"] == "contacted"
+    assert isinstance(payload["reviewed_at"], str) and payload["reviewed_at"]
+
+    resp = client.get("/api/results/demo_full_data.jsonl", params={"review_status": "contacted"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_items"] == 1 and _item_ids(data) == ["3001"]
+    assert data["items"][0]["_review_status"] == "contacted"
+    assert data["items"][0]["_reviewed_at"] == payload["reviewed_at"]
+
+    resp = client.get(
+        "/api/results/demo_full_data.jsonl", params={"review_status": "new", "recommended": True}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["total_items"] == 1 and _item_ids(resp.json()) == ["3002"]
+
+    resp = client.get("/api/results/demo_full_data.jsonl", params={"recommended": False})
+    assert _item_ids(resp.json()) == ["3003"]
+
+    resp = client.get("/api/results/demo_full_data.jsonl", params={"review_status": "contacted,bought"})
+    assert resp.json()["total_items"] == 1
+
+    resp = client.get("/api/results/demo_full_data.jsonl/review-summary")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "inbox": 1, "not_recommended": 1, "contacted": 1, "excluded": 0, "bought": 0, "total": 3,
+    }
+
+    resp = client.get("/api/results/inbox-count")
+    assert resp.json() == {"count": 2, "files": {"demo_full_data.jsonl": 1, "other_full_data.jsonl": 1}}
+
+    # 导出走同样的筛选
+    resp = client.get("/api/results/demo_full_data.jsonl/export", params={"review_status": "contacted"})
+    assert resp.status_code == 200
+    assert "Demo A" in resp.text and "Demo B" not in resp.text and "Demo C" not in resp.text
+    resp = client.get(
+        "/api/results/demo_full_data.jsonl/export", params={"review_status": "new", "recommended": True}
+    )
+    assert "Demo B" in resp.text and "Demo A" not in resp.text and "Demo C" not in resp.text
+
+    # 设回 new：reviewed_at 清空，重新回到收件箱
+    resp = client.patch("/api/results/demo_full_data.jsonl/items/3001/review", json={"review_status": "new"})
+    assert resp.status_code == 200
+    assert resp.json() == {"message": "已更新", "review_status": "new", "reviewed_at": None}
+    resp = client.get(
+        "/api/results/demo_full_data.jsonl", params={"review_status": "new", "recommended": True}
+    )
+    assert _item_ids(resp.json()) == ["3002", "3001"]
+    assert resp.json()["items"][1]["_reviewed_at"] is None
+    resp = client.get("/api/results/inbox-count")
+    assert resp.json()["count"] == 3
+
+
+def test_results_review_rejects_bad_input(tmp_path, monkeypatch):
+    client = _review_client(tmp_path, monkeypatch, with_other_file=False)
+
+    resp = client.get("/api/results/demo_full_data.jsonl", params={"review_status": "bogus"})
+    assert resp.status_code == 400
+    assert "bogus" in resp.json()["detail"]
+    resp = client.get("/api/results/demo_full_data.jsonl", params={"review_status": "new,bogus"})
+    assert resp.status_code == 400
+    resp = client.get("/api/results/demo_full_data.jsonl/export", params={"review_status": "bogus"})
+    assert resp.status_code == 400
+    # 空值等于不过滤
+    resp = client.get("/api/results/demo_full_data.jsonl", params={"review_status": ""})
+    assert resp.status_code == 200 and resp.json()["total_items"] == 3
+
+    resp = client.patch("/api/results/demo_full_data.jsonl/items/3001/review", json={"review_status": "maybe"})
+    assert resp.status_code == 422
+    resp = client.patch("/api/results/demo_full_data.jsonl/items/3001/review", json={})
+    assert resp.status_code == 422
+
+    resp = client.patch("/api/results/demo_full_data.jsonl/items/9999/review", json={"review_status": "bought"})
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "商品未找到"
+
+    resp = client.patch("/api/results/notes.txt/items/3001/review", json={"review_status": "bought"})
+    assert resp.status_code == 400
+    resp = client.get("/api/results/notes.txt/review-summary")
+    assert resp.status_code == 400
+    # 没有记录的文件：全 0 而不是报错
+    resp = client.get("/api/results/missing_full_data.jsonl/review-summary")
+    assert resp.status_code == 200
+    assert resp.json() == {"inbox": 0, "not_recommended": 0, "contacted": 0, "excluded": 0, "bought": 0, "total": 0}

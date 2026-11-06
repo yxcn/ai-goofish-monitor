@@ -17,15 +17,19 @@ from src.services.result_file_service import (
     validate_result_filename,
 )
 from src.services.result_storage_service import (
+    REVIEW_STATUSES,
     build_result_ndjson,
     delete_result_file_records,
     list_result_filenames,
     load_all_result_records,
+    load_inbox_counts,
     load_result_blacklist_keywords,
+    load_review_summary,
     load_visible_result_item_ids,
     query_result_records,
     result_file_exists,
     save_result_blacklist_keywords,
+    update_item_review_status,
     update_item_status,
 )
 
@@ -46,6 +50,19 @@ def _build_download_headers(export_name: str) -> dict[str, str]:
             f"filename*=UTF-8''{encoded_name}"
         )
     }
+
+
+def _parse_review_statuses(raw: str | None) -> list[str] | None:
+    """逗号分隔的处理状态筛选；为空表示不过滤，出现未知值抛 ValueError（路由映射为 400）。"""
+    if raw is None:
+        return None
+    statuses = list(dict.fromkeys(part.strip() for part in raw.split(",") if part.strip()))
+    if not statuses:
+        return None
+    unknown = [status for status in statuses if status not in REVIEW_STATUSES]
+    if unknown:
+        raise ValueError(f"未知的处理状态: {', '.join(unknown)}，可选值: {', '.join(REVIEW_STATUSES)}")
+    return statuses
 
 
 @router.get("/files")
@@ -83,6 +100,12 @@ async def delete_result_file(filename: str):
     return {"message": f"文件 {filename} 已成功删除"}
 
 
+@router.get("/inbox-count")
+async def get_inbox_count():
+    """所有结果文件的收件箱数量（可见、推荐且未处理的记录），含按文件分布"""
+    return await load_inbox_counts()
+
+
 @router.get("/{filename}")
 async def get_result_file_content(
     filename: str,
@@ -94,6 +117,8 @@ async def get_result_file_content(
     include_hidden: bool = Query(False),
     sort_by: str = Query("crawl_time"),
     sort_order: str = Query("desc"),
+    review_status: str | None = Query(None),  # 逗号分隔：new,contacted,excluded,bought
+    recommended: bool | None = Query(None),
 ):
     """读取指定的 .jsonl 文件内容，支持分页、筛选和排序"""
     if ai_recommended_only and keyword_recommended_only:
@@ -104,6 +129,7 @@ async def get_result_file_content(
 
     try:
         validate_result_filename(filename)
+        review_statuses = _parse_review_statuses(review_status)
         total_items, items = await query_result_records(
             filename,
             ai_recommended_only=ai_recommended_only,
@@ -113,6 +139,8 @@ async def get_result_file_content(
             page=page,
             limit=limit,
             include_hidden=include_hidden,
+            review_statuses=review_statuses,
+            recommended=recommended,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -144,6 +172,16 @@ async def get_result_file_insights(filename: str):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.get("/{filename}/review-summary")
+async def get_result_review_summary(filename: str):
+    """结果文件可见记录按处理状态分桶：inbox / not_recommended / contacted / excluded / bought / total"""
+    try:
+        validate_result_filename(filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return await load_review_summary(filename)
+
+
 @router.get("/{filename}/export")
 async def export_result_file_content(
     filename: str,
@@ -153,6 +191,8 @@ async def export_result_file_content(
     include_hidden: bool = Query(False),
     sort_by: str = Query("crawl_time"),
     sort_order: str = Query("desc"),
+    review_status: str | None = Query(None),
+    recommended: bool | None = Query(None),
 ):
     if ai_recommended_only and keyword_recommended_only:
         raise HTTPException(status_code=400, detail="AI推荐筛选与关键词推荐筛选不能同时开启。")
@@ -161,6 +201,7 @@ async def export_result_file_content(
 
     try:
         validate_result_filename(filename)
+        review_statuses = _parse_review_statuses(review_status)
         results = await load_all_result_records(
             filename,
             ai_recommended_only=ai_recommended_only,
@@ -168,6 +209,8 @@ async def export_result_file_content(
             sort_by=sort_by,
             sort_order=sort_order,
             include_hidden=include_hidden,
+            review_statuses=review_statuses,
+            recommended=recommended,
         )
         enriched = await asyncio.to_thread(enrich_records_with_price_insight, results, filename)
         csv_text = build_results_csv(enriched)
@@ -193,6 +236,17 @@ class UpdateStatusRequest(BaseModel):
     status: ItemStatus
 
 
+class ReviewStatus(str, Enum):
+    NEW = "new"
+    CONTACTED = "contacted"
+    EXCLUDED = "excluded"
+    BOUGHT = "bought"
+
+
+class UpdateReviewStatusRequest(BaseModel):
+    review_status: ReviewStatus
+
+
 class BlacklistRulesRequest(BaseModel):
     keywords: list[str]
 
@@ -208,6 +262,19 @@ async def patch_item_status(filename: str, item_id: str, body: UpdateStatusReque
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"message": "状态已更新", "status": body.status.value}
+
+
+@router.patch("/{filename}/items/{item_id}/review")
+async def patch_item_review_status(filename: str, item_id: str, body: UpdateReviewStatusRequest):
+    """更新指定商品的处理状态（new/contacted/excluded/bought）；设回 new 会清掉处理时间"""
+    try:
+        validate_result_filename(filename)
+        result = await update_item_review_status(filename, item_id, body.review_status.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if result is None:
+        raise HTTPException(status_code=404, detail="商品未找到")
+    return {"message": "已更新", **result}
 
 
 @router.get("/{filename}/blacklist-rules")

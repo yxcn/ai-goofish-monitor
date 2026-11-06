@@ -112,6 +112,8 @@ SCHEMA_STATEMENTS = (
         keyword_hit_count INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
         hidden_by_rule INTEGER NOT NULL DEFAULT 0,
+        review_status TEXT NOT NULL DEFAULT 'new',
+        reviewed_at TEXT,
         raw_json TEXT NOT NULL,
         UNIQUE(result_filename, link_unique_key)
     )
@@ -208,6 +210,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
     _migrate_result_items_status(conn)
     _migrate_result_items_hidden_by_rule(conn)
+    _migrate_result_items_review_status(conn)
     _migrate_tasks_json_list_columns(conn)
     conn.commit()
 
@@ -222,6 +225,26 @@ def _migrate_result_items_hidden_by_rule(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_results_filename_visibility_crawl"
         " ON result_items(result_filename, status, hidden_by_rule, crawl_time DESC)"
+    )
+
+
+# 结果的人工处理状态（结果页收件箱）：review_status 取值 new/contacted/excluded/bought，
+# reviewed_at 为 ISO 时间文本，未处理或设回 new 时为 NULL
+RESULT_REVIEW_COLUMNS = (
+    ("review_status", "TEXT NOT NULL DEFAULT 'new'"),
+    ("reviewed_at", "TEXT"),
+)
+
+
+def _migrate_result_items_review_status(conn: sqlite3.Connection) -> None:
+    """result_items 补 review_status / reviewed_at 列（收件箱按处理状态筛选、计数走 WHERE）。幂等。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(result_items)").fetchall()}
+    for column, definition in RESULT_REVIEW_COLUMNS:
+        if column not in cols:
+            conn.execute(f"ALTER TABLE result_items ADD COLUMN {column} {definition}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_results_filename_review"
+        " ON result_items(result_filename, review_status, is_recommended)"
     )
 
 
