@@ -12,6 +12,7 @@ import {
 } from 'lucide-vue-next'
 import { useWebSocket } from '@/composables/useWebSocket'
 import { useCrawlerHealth } from '@/composables/useCrawlerHealth'
+import { useInboxCount } from '@/composables/useInboxCount'
 import { useI18n } from 'vue-i18n'
 import type { CrawlerHealthLevel } from '@/types/health.d.ts'
 
@@ -21,13 +22,14 @@ const emit = defineEmits<{
 const router = useRouter()
 const { isConnected } = useWebSocket()
 const { overallLevel, issues, fetchHealth } = useCrawlerHealth()
+const { count: inboxCount, fetchInboxCount } = useInboxCount()
 const { t } = useI18n()
 
 const navItems = computed(() => [
   { to: '/dashboard', label: t('sidebar.dashboard'), icon: LayoutDashboard },
   { to: '/tasks', label: t('sidebar.tasks'), icon: ListTodo },
   { to: '/accounts', label: t('sidebar.accounts'), icon: Users },
-  { to: '/results', label: t('sidebar.results'), icon: Layers },
+  { to: '/results', label: t('sidebar.results'), icon: Layers, badge: inboxCount.value > 0 ? inboxCount.value : 0 },
   { to: '/logs', label: t('sidebar.logs'), icon: Terminal },
   { to: '/settings', label: t('sidebar.settings'), icon: Settings2 },
 ])
@@ -64,6 +66,7 @@ function goHealthOverview() {
 
 onMounted(() => {
   fetchHealth()
+  fetchInboxCount()
 })
 </script>
 
@@ -99,6 +102,12 @@ onMounted(() => {
         >
           {{ item.label }}
         </span>
+        <span
+          v-if="item.badge"
+          class="mr-1 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold leading-none text-white"
+          :aria-label="t('sidebar.inboxPending', { count: item.badge })"
+          :title="t('sidebar.inboxPending', { count: item.badge })"
+        >{{ item.badge > 99 ? '99+' : item.badge }}</span>
         <ChevronRight 
           v-if="isActive"
           class="w-4 h-4 text-primary animate-in fade-in slide-in-from-left-2"

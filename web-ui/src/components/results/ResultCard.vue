@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { ResultItem } from '@/types/result.d.ts'
+import type { CriteriaEntry, ResultItem, ReviewStatus } from '@/types/result.d.ts'
 import {
   Card,
   CardContent,
@@ -10,7 +10,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import Badge from '@/components/ui/badge/Badge.vue'
-import { ExternalLink, TrendingUp, TrendingDown, Info, User, Clock, CheckCircle2, XCircle, AlertCircle, EyeOff, Eye, ChevronDown, Tag } from 'lucide-vue-next'
+import { ExternalLink, TrendingUp, TrendingDown, Info, User, Clock, CheckCircle2, XCircle, AlertCircle, EyeOff, Eye, ChevronDown, Tag, HelpCircle, MessageCircle, ShoppingBag, Ban, Undo2 } from 'lucide-vue-next'
 import { formatDateTime } from '@/i18n'
 
 interface Props {
@@ -20,8 +20,9 @@ interface Props {
 const props = defineProps<Props>()
 const emit = defineEmits<{
   (e: 'toggle-block', item: ResultItem): void
+  (e: 'review', item: ResultItem, status: ReviewStatus): void
 }>()
-const { t } = useI18n()
+const { t, te } = useI18n()
 
 // computed 而不是解构常量：屏蔽/取消屏蔽后列表以同一商品 ID 复用组件实例，props.item 会换成新对象
 const info = computed(() => props.item.商品信息)
@@ -100,6 +101,75 @@ const hiddenLabel = computed(() => {
 
 const expanded = ref(false)
 
+// 逐项核对标签：AI 对每条硬性条件的 PASS / FAIL / NEEDS_MANUAL_CHECK，否决项排最前
+type ChipState = 'fail' | 'check' | 'pass' | 'unknown'
+const CHIP_ORDER: Record<ChipState, number> = { fail: 0, check: 1, pass: 2, unknown: 3 }
+const CHIP_CLASS: Record<ChipState, string> = {
+  fail: 'border-rose-200 bg-rose-50 text-rose-700',
+  check: 'border-amber-200 bg-amber-50 text-amber-700',
+  pass: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  unknown: 'border-slate-200 bg-slate-50 text-slate-500',
+}
+const CHIP_ICON: Record<ChipState, typeof XCircle> = { fail: XCircle, check: AlertCircle, pass: CheckCircle2, unknown: HelpCircle }
+function normalizeChipState(raw: unknown): ChipState {
+  const value = String(raw ?? '').trim().toUpperCase()
+  if (!value) return 'unknown'
+  if (['PASS', 'PASSED', 'OK', '通过', '符合'].includes(value)) return 'pass'
+  if (['FAIL', 'FAILED', '不通过', '不符合', '否决'].includes(value)) return 'fail'
+  if (/NEED|CHECK|MANUAL|UNKNOWN|VERIFY|确认|待/.test(value)) return 'check'
+  return 'unknown'
+}
+interface CriteriaChip { key: string; label: string; short: string; state: ChipState; comment: string; evidence: string }
+const criteriaChips = computed<CriteriaChip[]>(() => {
+  const raw = ai.value?.criteria_analysis
+  if (!raw || typeof raw !== 'object') return []
+  return Object.entries(raw)
+    .filter(([, entry]) => entry && typeof entry === 'object')
+    .map(([key, entry]) => {
+      const detail = entry as CriteriaEntry
+      const i18nKey = `results.criteria.${key}`
+      return {
+        key,
+        label: te(i18nKey) ? t(i18nKey) : key.replace(/_/g, ' '),
+        short: String(detail.short ?? '').trim(),
+        state: normalizeChipState(detail.status),
+        comment: String(detail.comment ?? '').trim(),
+        evidence: String(detail.evidence ?? '').trim(),
+      }
+    })
+    .sort((a, b) => CHIP_ORDER[a.state] - CHIP_ORDER[b.state])
+})
+const activeChipKey = ref<string | null>(null)
+const activeChip = computed(() => criteriaChips.value.find((chip) => chip.key === activeChipKey.value) ?? null)
+function toggleChip(key: string) {
+  activeChipKey.value = activeChipKey.value === key ? null : key
+}
+
+// 收件箱处理状态和可做的操作
+const reviewStatus = computed<ReviewStatus>(() => props.item._review_status ?? 'new')
+const reviewBadge = computed(() => {
+  switch (reviewStatus.value) {
+    case 'contacted': return { label: t('results.review.badgeContacted'), cls: 'bg-sky-500/90 text-white' }
+    case 'bought': return { label: t('results.review.badgeBought'), cls: 'bg-emerald-600/90 text-white' }
+    case 'excluded': return { label: t('results.review.badgeExcluded'), cls: 'bg-slate-700/80 text-white' }
+    default: return null
+  }
+})
+interface ReviewAction { status: ReviewStatus; label: string; icon: typeof MessageCircle; cls: string }
+const ACTIONS: Record<Exclude<ReviewStatus, 'new'> | 'restore', () => ReviewAction> = {
+  contacted: () => ({ status: 'contacted', label: t('results.review.markContacted'), icon: MessageCircle, cls: 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100' }),
+  bought: () => ({ status: 'bought', label: t('results.review.markBought'), icon: ShoppingBag, cls: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100' }),
+  excluded: () => ({ status: 'excluded', label: t('results.review.markExcluded'), icon: Ban, cls: 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50' }),
+  restore: () => ({ status: 'new', label: t('results.review.restore'), icon: Undo2, cls: 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50' }),
+}
+const reviewActions = computed<ReviewAction[]>(() => {
+  switch (reviewStatus.value) {
+    case 'new': return [ACTIONS.contacted(), ACTIONS.bought(), ACTIONS.excluded()]
+    case 'contacted': return [ACTIONS.bought(), ACTIONS.excluded(), ACTIONS.restore()]
+    default: return [ACTIONS.restore()]
+  }
+})
+
 // 卖家画像：程序按固定规则算出的摘要；结论和信号常驻，其余几行展开看
 const profile = computed(() => (props.item.卖家画像 && typeof props.item.卖家画像 === 'object' ? props.item.卖家画像 : null))
 const profileExpanded = ref(false)
@@ -162,6 +232,9 @@ const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
         <Badge v-if="isRuleHidden" variant="secondary" class="bg-slate-900/75 text-white border-none backdrop-blur-md shadow-sm">
           {{ t('results.card.blacklisted') }}
         </Badge>
+        <Badge v-if="reviewBadge" variant="secondary" class="border-none backdrop-blur-md shadow-sm" :class="reviewBadge.cls">
+          {{ reviewBadge.label }}
+        </Badge>
       </div>
       <div class="absolute top-3 right-3 flex gap-1.5">
         <button
@@ -220,13 +293,37 @@ const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
             <component :is="recommendationStatus.icon" class="w-4 h-4" :class="recommendationStatus.text" />
             <span class="text-sm font-bold" :class="recommendationStatus.text">{{ recommendationStatus.label }}</span>
           </div>
-          <div v-if="!isSkipped" class="flex items-center gap-1">
+          <div v-if="!isSkipped && criteriaChips.length === 0" class="flex items-center gap-1">
              <span class="text-[10px] font-medium uppercase tracking-wider text-slate-400">{{ t('results.card.aiMatch') }}</span>
              <span class="text-sm font-black" :class="recommendationStatus.text">{{ matchScore }}%</span>
           </div>
         </div>
-        
-        <div v-if="!isSkipped" class="w-full h-1.5 bg-white/50 rounded-full overflow-hidden mb-3">
+
+        <!-- 逐项核对：有 criteria_analysis 就用标签代替百分比，一眼看到哪条不符 -->
+        <div v-if="criteriaChips.length" class="mb-2.5">
+          <div class="flex flex-wrap gap-1">
+            <button
+              v-for="chip in criteriaChips"
+              :key="chip.key"
+              type="button"
+              class="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-tight transition-colors"
+              :class="[CHIP_CLASS[chip.state], activeChipKey === chip.key ? 'ring-2 ring-offset-1 ring-slate-300' : '']"
+              :title="chip.comment || chip.label"
+              :aria-pressed="activeChipKey === chip.key"
+              @click="toggleChip(chip.key)"
+            >
+              <component :is="CHIP_ICON[chip.state]" class="w-3 h-3 shrink-0" />
+              <span>{{ chip.label }}</span>
+              <span v-if="chip.short" class="font-bold">{{ chip.short }}</span>
+            </button>
+          </div>
+          <div v-if="activeChip" class="mt-1.5 rounded-lg bg-white/70 px-2 py-1.5 text-[11px] leading-relaxed text-slate-600">
+            <span class="font-bold">{{ activeChip.label }} · {{ t(`results.criteria.state.${activeChip.state}`) }}</span>
+            <span v-if="activeChip.comment"> {{ activeChip.comment }}</span>
+            <p v-if="activeChip.evidence" class="mt-0.5 text-[10px] text-slate-400">{{ t('results.criteria.evidence', { evidence: activeChip.evidence }) }}</p>
+          </div>
+        </div>
+        <div v-else-if="!isSkipped" class="w-full h-1.5 bg-white/50 rounded-full overflow-hidden mb-3">
           <div 
             class="h-full transition-all duration-1000 ease-out rounded-full" 
             :class="recommendationStatus.color"
@@ -315,6 +412,21 @@ const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
           </div>
         </div>
       </div>
+
+      <!-- 收件箱操作 -->
+      <div class="mt-3 flex flex-wrap gap-1.5">
+        <button
+          v-for="action in reviewActions"
+          :key="action.status"
+          type="button"
+          class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :class="action.cls"
+          @click="emit('review', props.item, action.status)"
+        >
+          <component :is="action.icon" class="w-3 h-3" />
+          {{ action.label }}
+        </button>
+      </div>
     </CardContent>
 
     <CardFooter class="px-4 py-3 bg-slate-50/30 border-t border-slate-100/60 flex items-center justify-between text-[10px]">
@@ -325,7 +437,7 @@ const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
         </div>
         <div class="flex items-center gap-1">
           <Clock class="w-3 h-3" />
-          <span>{{ crawlTime }}</span>
+          <span>{{ t('results.card.crawledAt', { time: crawlTime }) }}</span>
         </div>
       </div>
       <a :href="info.商品链接" target="_blank" rel="noopener noreferrer" class="flex items-center gap-1 text-primary font-bold hover:gap-1.5 transition-all">

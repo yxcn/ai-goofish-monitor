@@ -1,4 +1,4 @@
-import type { ResultInsights, ResultItem } from '@/types/result.d.ts'
+import type { ResultInsights, ResultItem, ReviewStatus, ReviewSummary } from '@/types/result.d.ts'
 import { http } from '@/lib/http'
 
 export interface GetResultContentParams {
@@ -8,6 +8,10 @@ export interface GetResultContentParams {
   include_hidden?: boolean;
   sort_by?: 'crawl_time' | 'publish_time' | 'price' | 'keyword_hit_count';
   sort_order?: 'asc' | 'desc';
+  /** 逗号分隔的 review_status 子集，如 'new' 或 'contacted,bought' */
+  review_status?: string;
+  /** true 只要推荐（不分 AI/关键词），false 只要不推荐，省略不筛 */
+  recommended?: boolean;
   page?: number;
   limit?: number;
 }
@@ -71,4 +75,24 @@ export async function updateItemStatus(filename: string, itemId: string, status:
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status }),
   })
+}
+
+export async function updateReviewStatus(
+  filename: string,
+  itemId: string,
+  reviewStatus: ReviewStatus
+): Promise<{ message: string; review_status: ReviewStatus; reviewed_at: string | null }> {
+  return await http(`/api/results/${encodeURIComponent(filename)}/items/${encodeURIComponent(itemId)}/review`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ review_status: reviewStatus }),
+  })
+}
+
+export async function getReviewSummary(filename: string): Promise<ReviewSummary> {
+  return await http(`/api/results/${encodeURIComponent(filename)}/review-summary`)
+}
+
+export async function getInboxCount(): Promise<{ count: number; files: Record<string, number> }> {
+  return await http('/api/results/inbox-count')
 }

@@ -1,20 +1,42 @@
 import { ref, reactive, watch, onMounted, onScopeDispose, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import type { ResultInsights, ResultItem } from '@/types/result.d.ts'
+import type { ResultInsights, ResultItem, ReviewStatus, ReviewSummary } from '@/types/result.d.ts'
 import * as resultsApi from '@/api/results'
 import type { GetResultContentParams } from '@/api/results'
 import { useWebSocket } from '@/composables/useWebSocket'
+import { useInboxCount } from '@/composables/useInboxCount'
 import * as tasksApi from '@/api/tasks'
+
+export type ResultsTab = 'inbox' | 'contacted' | 'excluded' | 'bought' | 'all'
+export const RESULT_TABS: ResultsTab[] = ['inbox', 'contacted', 'excluded', 'bought', 'all']
+
+// 每个页签对应的后端筛选；「全部」沿用筛选栏里的推荐/屏蔽复选框
+const TAB_QUERY: Record<ResultsTab, Pick<GetResultContentParams, 'review_status' | 'recommended'>> = {
+  inbox: { review_status: 'new', recommended: true },
+  contacted: { review_status: 'contacted' },
+  excluded: { review_status: 'excluded' },
+  bought: { review_status: 'bought' },
+  all: {},
+}
+
+/** 收件箱里折叠的「不推荐」区最多拉这么多条（后端单次上限） */
+export const NOT_RECOMMENDED_LIMIT = 100
+
+const STORAGE_KEY_TAB = 'resultsTab'
+
+type PersistedFilters = Required<Omit<GetResultContentParams, 'page' | 'limit' | 'review_status' | 'recommended'>>
 
 export function useResults() {
   const { t } = useI18n()
   const route = useRoute()
+  const inbox = useInboxCount()
   // State
   const files = ref<string[]>([])
   const selectedFile = ref<string | null>(null)
   const results = ref<ResultItem[]>([])
   const insights = ref<ResultInsights | null>(null)
+  const summary = ref<ReviewSummary | null>(null)
   const totalItems = ref(0)
   const page = ref(1)
   // The backend caps `limit` at 100 per request.
@@ -27,18 +49,18 @@ export function useResults() {
     page.value = next
   }
   const blacklistKeywords = ref<string[]>([])
-  const taskNameByKeyword = ref<Record<string, string>>({})
+  const taskByKeyword = ref<Record<string, { id: number; task_name: string }>>({})
   const isFileOptionsReady = ref(false)
   const hasFetchedFiles = ref(false)
   const hasFetchedTasks = ref(false)
   const isSavingBlacklist = ref(false)
   const readyDelayMs = 200
   let readyTimer: ReturnType<typeof setTimeout> | null = null
-  
+
   const STORAGE_KEY_FILTERS = 'resultFilters'
 
-  function loadPersistedFilters(): Required<Omit<GetResultContentParams, 'page' | 'limit'>> {
-    const defaults: Required<Omit<GetResultContentParams, 'page' | 'limit'>> = {
+  function loadPersistedFilters(): PersistedFilters {
+    const defaults: PersistedFilters = {
       recommended_only: false,
       ai_recommended_only: false,
       keyword_recommended_only: false,
@@ -53,7 +75,22 @@ export function useResults() {
     return defaults
   }
 
-  const filters = reactive<Required<Omit<GetResultContentParams, 'page' | 'limit'>>>(loadPersistedFilters())
+  function loadPersistedTab(): ResultsTab {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_TAB)
+      if (saved && (RESULT_TABS as string[]).includes(saved)) return saved as ResultsTab
+    } catch { /* ignore */ }
+    return 'inbox'
+  }
+
+  const filters = reactive<PersistedFilters>(loadPersistedFilters())
+  const tab = ref<ResultsTab>(loadPersistedTab())
+
+  // 收件箱里折叠起来的「不推荐」商品，展开时才拉
+  const showNotRecommended = ref(false)
+  const secondaryResults = ref<ResultItem[]>([])
+  const secondaryTotal = ref(0)
+  const isSecondaryLoading = ref(false)
 
   const isLoading = ref(false)
   const error = ref<Error | null>(null)
@@ -65,6 +102,8 @@ export function useResults() {
   let resultsRequestSeq = 0
   let insightsRequestSeq = 0
   let blacklistRequestSeq = 0
+  let summaryRequestSeq = 0
+  let secondaryRequestSeq = 0
 
   function normalizeKeyword(value: string) {
     return value.trim().toLowerCase().replace(/\s+/g, '_')
@@ -72,6 +111,20 @@ export function useResults() {
 
   function getKeywordFromFilename(filename: string) {
     return filename.replace(/_full_data\.jsonl$/i, '').toLowerCase()
+  }
+
+  /** 当前页签实际发给后端的参数；按状态分栏时不带筛选栏里的推荐/屏蔽复选框 */
+  function buildQueryParams(): GetResultContentParams {
+    const base: GetResultContentParams = { sort_by: filters.sort_by, sort_order: filters.sort_order }
+    if (tab.value === 'all') {
+      return {
+        ...base,
+        ai_recommended_only: filters.ai_recommended_only,
+        keyword_recommended_only: filters.keyword_recommended_only,
+        include_hidden: filters.include_hidden,
+      }
+    }
+    return { ...base, ...TAB_QUERY[tab.value] }
   }
 
   // Methods
@@ -114,7 +167,7 @@ export function useResults() {
     error.value = null
     try {
       const data = await resultsApi.getResultContent(file, {
-        ...filters,
+        ...buildQueryParams(),
         page: page.value,
         limit: limit.value,
       })
@@ -133,6 +186,56 @@ export function useResults() {
       totalItems.value = 0
     } finally {
       if (seq === resultsRequestSeq) isLoading.value = false
+    }
+  }
+
+  async function fetchSecondary() {
+    const seq = ++secondaryRequestSeq
+    const file = selectedFile.value
+    if (!file || tab.value !== 'inbox' || !showNotRecommended.value) {
+      secondaryResults.value = []
+      secondaryTotal.value = 0
+      isSecondaryLoading.value = false
+      return
+    }
+    isSecondaryLoading.value = true
+    try {
+      const data = await resultsApi.getResultContent(file, {
+        sort_by: filters.sort_by,
+        sort_order: filters.sort_order,
+        review_status: 'new',
+        recommended: false,
+        page: 1,
+        limit: NOT_RECOMMENDED_LIMIT,
+      })
+      if (seq !== secondaryRequestSeq) return
+      secondaryResults.value = data.items
+      secondaryTotal.value = data.total_items
+    } catch (e) {
+      if (seq !== secondaryRequestSeq) return
+      if (e instanceof Error) error.value = e
+      secondaryResults.value = []
+      secondaryTotal.value = 0
+    } finally {
+      if (seq === secondaryRequestSeq) isSecondaryLoading.value = false
+    }
+  }
+
+  async function fetchSummary() {
+    const seq = ++summaryRequestSeq
+    const file = selectedFile.value
+    if (!file) {
+      summary.value = null
+      return
+    }
+    try {
+      const data = await resultsApi.getReviewSummary(file)
+      if (seq !== summaryRequestSeq) return
+      summary.value = data
+    } catch {
+      // 旧后端没有这个接口：页签照常可用，只是不显示计数
+      if (seq !== summaryRequestSeq) return
+      summary.value = null
     }
   }
 
@@ -177,13 +280,13 @@ export function useResults() {
   async function fetchTaskNameMap() {
     try {
       const tasks = await tasksApi.getAllTasks()
-      const mapping: Record<string, string> = {}
+      const mapping: Record<string, { id: number; task_name: string }> = {}
       tasks.forEach((task) => {
         if (task.keyword) {
-          mapping[normalizeKeyword(task.keyword)] = task.task_name
+          mapping[normalizeKeyword(task.keyword)] = { id: task.id, task_name: task.task_name }
         }
       })
-      taskNameByKeyword.value = mapping
+      taskByKeyword.value = mapping
     } catch (e) {
       if (e instanceof Error) error.value = e
     } finally {
@@ -209,6 +312,13 @@ export function useResults() {
     }
   })
 
+  /** 当前文件的列表、计数和折叠区一起刷新 */
+  function refreshCurrentFile() {
+    fetchResults()
+    fetchSummary()
+    if (showNotRecommended.value) fetchSecondary()
+  }
+
   // Real-time updates
   on('results_updated', async () => {
     const oldFile = selectedFile.value
@@ -216,7 +326,7 @@ export function useResults() {
     // If the selected file remains the same, refresh its content (in case of append)
     // If it changed (e.g. from null to new file), the watcher will handle it.
     if (selectedFile.value && selectedFile.value === oldFile) {
-      fetchResults()
+      refreshCurrentFile()
       fetchInsights()
     }
   })
@@ -235,7 +345,7 @@ export function useResults() {
     await fetchFiles()
     // A changed selection (e.g. first file just appeared) is handled by the watchers.
     if (selectedFile.value && selectedFile.value === current) {
-      fetchResults()
+      refreshCurrentFile()
       fetchInsights()
     }
   })
@@ -245,6 +355,8 @@ export function useResults() {
     await fetchFiles()
     if (selectedFile.value && selectedFile.value === current) {
       await fetchResults()
+      await fetchSummary()
+      if (showNotRecommended.value) await fetchSecondary()
       await fetchInsights()
       await fetchBlacklistRules()
     }
@@ -252,7 +364,7 @@ export function useResults() {
 
   function exportSelectedResults() {
     if (!selectedFile.value) return
-    resultsApi.downloadResultExport(selectedFile.value, { ...filters })
+    resultsApi.downloadResultExport(selectedFile.value, { ...buildQueryParams() })
   }
 
   async function deleteSelectedFile(filename?: string) {
@@ -269,6 +381,7 @@ export function useResults() {
         }
       }
       await fetchFiles()
+      inbox.refreshInboxCount()
     } catch (e) {
       if (e instanceof Error) error.value = e
       throw e
@@ -284,9 +397,40 @@ export function useResults() {
     const newStatus = item._status === 'hidden' ? 'active' : 'hidden'
     try {
       await resultsApi.updateItemStatus(selectedFile.value, itemId, newStatus)
-      await fetchResults()
+      refreshCurrentFile()
+      inbox.refreshInboxCount()
     } catch (e) {
       if (e instanceof Error) error.value = e
+    }
+  }
+
+  /** 收件箱操作：已联系 / 排除 / 买到了 / 放回。失败时抛出，由页面提示。 */
+  async function setReviewStatus(item: ResultItem, status: ReviewStatus) {
+    const file = selectedFile.value
+    const itemId = item.商品信息?.商品ID
+    if (!file || !itemId) return
+    await resultsApi.updateReviewStatus(file, itemId, status)
+    await Promise.all([
+      fetchResults(),
+      fetchSummary(),
+      showNotRecommended.value ? fetchSecondary() : Promise.resolve(),
+    ])
+    inbox.refreshInboxCount()
+  }
+
+  /**
+   * 买到了：标记商品，可选把所在任务停掉（买到就没必要再每小时抓了）。
+   * 标记失败抛出；停任务失败不抛，放在返回值里由页面提示。
+   */
+  async function markBought(item: ResultItem, disableTask: boolean): Promise<{ taskDisabled: boolean; taskError: Error | null }> {
+    await setReviewStatus(item, 'bought')
+    const task = selectedTask.value
+    if (!disableTask || !task) return { taskDisabled: false, taskError: null }
+    try {
+      await tasksApi.updateTask(task.id, { enabled: false })
+      return { taskDisabled: true, taskError: null }
+    } catch (e) {
+      return { taskDisabled: false, taskError: e instanceof Error ? e : new Error(String(e)) }
     }
   }
 
@@ -297,8 +441,9 @@ export function useResults() {
     try {
       const data = await resultsApi.updateResultBlacklistRules(selectedFile.value, keywords)
       blacklistKeywords.value = data.keywords || []
-      await fetchResults()
+      refreshCurrentFile()
       await fetchInsights()
+      inbox.refreshInboxCount()
     } catch (e) {
       if (e instanceof Error) error.value = e
       throw e
@@ -307,11 +452,20 @@ export function useResults() {
     }
   }
 
+  function setTab(next: ResultsTab) {
+    if (!RESULT_TABS.includes(next) || next === tab.value) return
+    tab.value = next
+  }
+
   // Watchers
   watch(filters, (val) => {
     localStorage.setItem(STORAGE_KEY_FILTERS, JSON.stringify(val))
   }, { deep: true })
-  watch([selectedFile, filters], () => {
+  watch(tab, (val) => {
+    localStorage.setItem(STORAGE_KEY_TAB, val)
+    showNotRecommended.value = false
+  })
+  watch([selectedFile, filters, tab], () => {
     if (page.value !== 1) {
       // The page watcher below performs the single refetch.
       page.value = 1
@@ -320,7 +474,20 @@ export function useResults() {
     fetchResults()
   }, { deep: true })
   watch(page, fetchResults)
+  // 排序变了，展开着的「不推荐」区也要跟着重排
+  watch([() => filters.sort_by, () => filters.sort_order], () => {
+    if (showNotRecommended.value) fetchSecondary()
+  })
+  watch(showNotRecommended, (shown) => {
+    if (shown) fetchSecondary()
+    else {
+      secondaryResults.value = []
+      secondaryTotal.value = 0
+    }
+  })
   watch(selectedFile, () => {
+    showNotRecommended.value = false
+    fetchSummary()
     fetchInsights()
     fetchBlacklistRules()
   })
@@ -341,7 +508,7 @@ export function useResults() {
   const fileOptions = computed(() =>
     files.value.map((file) => {
       const keyword = getKeywordFromFilename(file)
-      const taskName = taskNameByKeyword.value[keyword]
+      const taskName = taskByKeyword.value[keyword]?.task_name
       return {
         value: file,
         taskName: taskName || t('common.unnamed'),
@@ -351,6 +518,12 @@ export function useResults() {
       }
     })
   )
+
+  /** 当前结果文件对应的任务（id + 名称），找不到为 null */
+  const selectedTask = computed(() => {
+    if (!selectedFile.value) return null
+    return taskByKeyword.value[getKeywordFromFilename(selectedFile.value)] ?? null
+  })
 
   // Lifecycle
   onMounted(() => {
@@ -363,11 +536,18 @@ export function useResults() {
     selectedFile,
     results,
     insights,
+    summary,
     totalItems,
     page,
     totalPages,
     setPage,
     filters,
+    tab,
+    setTab,
+    showNotRecommended,
+    secondaryResults,
+    secondaryTotal,
+    isSecondaryLoading,
     isLoading,
     error,
     fetchFiles, // Expose to allow manual refresh
@@ -375,10 +555,13 @@ export function useResults() {
     exportSelectedResults,
     deleteSelectedFile,
     toggleItemBlock,
+    setReviewStatus,
+    markBought,
     blacklistKeywords,
     isSavingBlacklist,
     saveBlacklistRules,
     fileOptions,
     isFileOptionsReady,
+    selectedTask,
   }
 }

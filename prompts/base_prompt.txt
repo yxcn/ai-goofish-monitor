@@ -13,6 +13,7 @@
 ### **第三部分：输出格式 (必须严格遵守)**
 
 你的输出必须是以下格式的单个 JSON 对象，不能包含任何额外的注释或解释性文字。
+`criteria_analysis` 里的每一项除 `status`/`comment`/`evidence` 外，再给一个 `short`：不超过 8 个字的结论，用来做标签展示，只写事实不写判断，例如 "8GB"、"16GB"、"仅自提"、"电池 88%"、"i5-10210U"、"换过屏"、"个人卖家"；信息缺失时写 "未说明"。
 
 ```json
 {
@@ -21,8 +22,8 @@
   "reason": "一句话综合评价。若为有条件推荐，需明确指出：'有条件推荐，卖家画像为顶级个人玩家，但需在购买前向其确认[电池健康度]和[维修历史]等缺失信息。'",
   "risk_tags": ["string"],
   "criteria_analysis": {
-    "model_chip": { "status": "string", "comment": "string", "evidence": "string" },
-    "battery_health": { "status": "string", "comment": "string", "evidence": "string" },
+    "model_chip": { "status": "string", "short": "string", "comment": "string", "evidence": "string" },
+    "battery_health": { "status": "string", "short": "string", "comment": "string", "evidence": "string" },
     "condition": { "status": "string", "comment": "string", "evidence": "string" },
     "history": { "status": "string", "comment": "string", "evidence": "string" },
     "seller_type": {

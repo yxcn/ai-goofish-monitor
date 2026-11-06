@@ -29,6 +29,8 @@ interface Props {
   sortOrder: 'asc' | 'desc'
   isLoading: boolean
   isReady: boolean
+  /** 收件箱等按状态分栏的页签不显示推荐/屏蔽筛选，只有「全部」才显示 */
+  showVisibilityFilters?: boolean
 }
 
 const props = defineProps<Props>()
@@ -149,7 +151,8 @@ function handleToggleKeywordRecommended(value: boolean) {
     </div>
 
     <div class="mt-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-      <div class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+      <div v-if="props.showVisibilityFilters === false" class="hidden lg:block"></div>
+      <div v-if="props.showVisibilityFilters !== false" class="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
         <div class="flex items-center space-x-2">
           <Checkbox
             id="ai-recommended-only"

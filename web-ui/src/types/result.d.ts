@@ -56,6 +56,16 @@ export interface SellerInfo {
   "卖家收到的评价列表"?: any[]; // Define more strictly if needed
 }
 
+// AI 逐项核对结果：status 为 PASS / FAIL / NEEDS_MANUAL_CHECK，short 是 ≤8 字的事实结论（新版提示词才有）
+export interface CriteriaEntry {
+  status?: string;
+  short?: string;
+  comment?: string;
+  evidence?: string;
+  persona?: string;
+  [key: string]: unknown;
+}
+
 export interface AiAnalysis {
   is_recommended: boolean;
   reason: string;
@@ -66,7 +76,7 @@ export interface AiAnalysis {
   value_summary?: string;
   prompt_version?: string;
   risk_tags?: string[];
-  criteria_analysis?: Record<string, any>;
+  criteria_analysis?: Record<string, CriteriaEntry>;
   matched_keywords?: string[];
   error?: string;
 }
@@ -154,4 +164,19 @@ export interface ResultItem {
   _effective_hidden?: boolean;
   _hidden_reason?: 'manual' | 'rule' | 'expired' | null;
   _matched_blacklist_keywords?: string[];
+  // 用户在收件箱里标的处理状态（result_items.review_status），没标过就是 new
+  _review_status?: ReviewStatus;
+  _reviewed_at?: string | null;
+}
+
+export type ReviewStatus = 'new' | 'contacted' | 'excluded' | 'bought'
+
+// GET /api/results/{file}/review-summary：只统计可见记录
+export interface ReviewSummary {
+  inbox: number;
+  not_recommended: number;
+  contacted: number;
+  excluded: number;
+  bought: number;
+  total: number;
 }
