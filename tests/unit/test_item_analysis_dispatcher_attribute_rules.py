@@ -151,3 +151,68 @@ def test_recommended_items_are_notified_with_their_analysis_attached():
     assert reason == "有条件推荐：配置合适"
     assert item_data["商品标题"] == "T14"
     assert item_data["ai_analysis"]["risk_tags"] == ["需确认：电池健康度"]
+
+
+def test_seller_profile_is_built_before_ai_and_attached_to_notifications():
+    seen = {}
+
+    async def seller_loader(user_id: str):
+        return {
+            "卖家昵称": "x***7",
+            "卖家IP属地": "山东省",
+            "卖家发布的商品列表": [{"商品ID": "ok", "商品标题": "ThinkPad T14", "商品状态": "在售"}],
+            "卖家收到的评价列表": [],
+        }
+
+    async def image_downloader(product_id, image_urls, task_name):
+        return []
+
+    async def ai_analyzer(record, image_paths, prompt_text):
+        seen["ai_record"] = record
+        return {"is_recommended": True, "reason": "ok"}
+
+    async def notifier(item_data, reason):
+        seen["notify"] = item_data
+
+    async def saver(record, keyword):
+        seen["saved"] = record
+        return True
+
+    async def go():
+        dispatcher = ItemAnalysisDispatcher(
+            concurrency=1,
+            skip_ai_analysis=False,
+            seller_loader=seller_loader,
+            image_downloader=image_downloader,
+            ai_analyzer=ai_analyzer,
+            notifier=notifier,
+            saver=saver,
+        )
+        dispatcher.submit(
+            ItemAnalysisJob(
+                keyword="ThinkPad T14",
+                task_name="T14",
+                decision_mode="ai",
+                analyze_images=False,
+                prompt_text="prompt",
+                keyword_rules=(),
+                final_record={"搜索关键字": "ThinkPad T14", "商品信息": {"商品ID": "ok", "商品标题": "ThinkPad T14", "发货地区": "山东", "商品图片列表": []}, "卖家信息": {}},
+                seller_id="seller-1",
+                zhima_credit_text="暂无",
+                registration_duration_text="来闲鱼1年",
+                seller_detail={"卖家卖出件数": 0, "卖家注册天数": 500, "卖家实人认证": True},
+            )
+        )
+        await dispatcher.join()
+
+    asyncio.run(go())
+
+    saved = seen["saved"]
+    assert saved["卖家信息"]["卖家卖出件数"] == 0 and saved["卖家信息"]["卖家注册时长"] == "来闲鱼1年"
+    profile = saved["卖家画像"]
+    assert profile["商家判断"] == "个人"
+    assert "✅ IP 属地与发货地一致" in profile["信号"]
+    # AI 在画像算好之后才拿到记录；通知也带着同一份画像
+    assert seen["ai_record"]["卖家画像"] == profile
+    assert seen["notify"]["卖家画像"] == profile
+    assert seen["notify"]["ai_analysis"]["reason"] == "ok"

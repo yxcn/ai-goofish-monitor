@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime
 
 from src.config import AI_DEBUG_MODE
@@ -130,6 +131,10 @@ def parse_item_detail_facts(item_do: dict, seller_do: dict) -> dict:
     if favorites is not None:
         facts["收藏数"] = favorites
 
+    category_id = item_do.get("categoryId")
+    if category_id not in (None, ""):
+        facts["品类ID"] = category_id
+
     text_fields = (
         ("卖家所在城市", seller_do.get("city") or seller_do.get("publishCity")),
         ("卖家最近活跃", seller_do.get("lastVisitTime")),
@@ -140,6 +145,35 @@ def parse_item_detail_facts(item_do: dict, seller_do: dict) -> dict:
         value = str(raw or "").strip()
         if value:
             facts[key] = value
+    return facts
+
+
+def parse_seller_detail(seller_do: dict) -> dict:
+    """详情接口 sellerDO 里的账号级信息：卖出件数、在售数、注册天数/日期、实人认证、交易摘要。
+
+    这些进 卖家信息，和主页接口采到的资料合在一起；缺失的字段不出现。
+    """
+    seller_do = seller_do if isinstance(seller_do, dict) else {}
+    facts = {}
+    for key, raw in (
+        ("卖家卖出件数", seller_do.get("hasSoldNumInteger")),
+        ("卖家在售数量", seller_do.get("itemCount")),
+        ("卖家注册天数", seller_do.get("userRegDay")),
+    ):
+        value = _as_count(raw)
+        if value is not None:
+            facts[key] = value
+    register_ts = _as_count(seller_do.get("registerTime"))
+    if register_ts:
+        facts["卖家注册日期"] = datetime.fromtimestamp(register_ts / 1000).strftime("%Y-%m-%d")
+    identity_tags = seller_do.get("identityTags")
+    texts = [str(tag.get("text") or "") for tag in identity_tags if isinstance(tag, dict)] if isinstance(identity_tags, list) else []
+    real_person = [text for text in texts if "实人认证" in text]
+    if real_person:
+        facts["卖家实人认证"] = all("未" not in text for text in real_person)
+    summary = str(seller_do.get("xianyuSummary") or "").strip()
+    if summary:
+        facts["卖家交易摘要"] = summary
     return facts
 
 
@@ -204,14 +238,88 @@ async def _parse_user_items_data(items_json: list) -> list:
         else:
             status_text = f"未知状态 ({status_code})"
 
-        parsed_list.append({
+        entry = {
             "商品ID": data.get('id'),
             "商品标题": data.get('title'),
             "商品价格": data.get('priceInfo', {}).get('price'),
             "商品主图": data.get('picInfo', {}).get('picUrl'),
             "商品状态": status_text
-        })
+        }
+        entry.update(_parse_item_card_labels(data))
+        parsed_list.append(entry)
     return parsed_list
+
+
+_WANT_COUNT_PATTERN = re.compile(r"(\d+)\s*人想要")
+
+
+def _parse_item_card_labels(card_data: dict) -> dict:
+    """主页商品卡片上的标签：划线原价、想要人数、发布时间标签（"48小时内发布"）、包邮/验货宝，以及品类 ID。
+
+    标签在 itemLabelDataVO.labelData 的 r1/r2/r3 几行里，缺失的字段不出现。
+    """
+    extras = {}
+    tags = []
+    original_price = None
+    wants = None
+    publish_label = None
+    label_data = (card_data.get("itemLabelDataVO") or {}).get("labelData") or {}
+    rows = label_data.values() if isinstance(label_data, dict) else []
+    for row in rows:
+        tag_list = row.get("tagList") if isinstance(row, dict) else None
+        for tag in tag_list if isinstance(tag_list, list) else []:
+            tag_data = tag.get("data") if isinstance(tag, dict) else None
+            if not isinstance(tag_data, dict):
+                continue
+            content = str(tag_data.get("content") or tag_data.get("text") or "").strip()
+            if not content:
+                continue
+            if str(tag_data.get("isStrikeThrough")).lower() == "true":
+                original_price = original_price or content
+                continue
+            want_match = _WANT_COUNT_PATTERN.search(content)
+            if want_match:
+                wants = int(want_match.group(1))
+                continue
+            if "发布" in content:
+                publish_label = publish_label or content
+                continue
+            if content not in tags:
+                tags.append(content)
+    post_info = str((card_data.get("detailParams") or {}).get("postInfo") or "").strip()
+    if post_info and post_info not in tags:
+        tags.append(post_info)
+    if tags:
+        extras["商品标签"] = tags
+    if original_price:
+        extras["商品原价"] = original_price
+    if wants is not None:
+        extras["想要人数"] = wants
+    if publish_label:
+        extras["发布标签"] = publish_label
+    category_id = card_data.get("categoryId")
+    if category_id not in (None, ""):
+        extras["品类ID"] = category_id
+    return extras
+
+
+# 头部接口 baseInfo.tags 里的账号标识，键名带数字后缀（real_name_certification_77），按前缀识别
+ACCOUNT_TAG_LABELS = (
+    ("real_name_certification", "实名认证"),
+    ("real_person_certification", "实人认证"),
+    ("idle_zhima_zheng", "芝麻信用认证"),
+)
+
+
+def account_certifications(tags) -> list:
+    """把头部接口的账号标识转成认证名称列表，只保留值为真的。"""
+    if not isinstance(tags, dict):
+        return []
+    labels = []
+    for prefix, label in ACCOUNT_TAG_LABELS:
+        if any(str(key).startswith(prefix) and value for key, value in tags.items()):
+            labels.append(label)
+    return labels
 
 
 async def parse_user_head_data(head_json: dict) -> dict:
@@ -224,6 +332,8 @@ async def parse_user_head_data(head_json: dict) -> dict:
             seller_credit = {'level': await safe_get(tag, 'attributes', 'level'), 'text': tag.get('text')}
         elif await safe_get(tag, 'attributes', 'role') == 'buyer':
             buyer_credit = {'level': await safe_get(tag, 'attributes', 'level'), 'text': tag.get('text')}
+    social = await safe_get(data, 'module', 'social', default={})
+    social = social if isinstance(social, dict) else {}
     return {
         "卖家昵称": await safe_get(data, 'module', 'base', 'displayName'),
         "卖家头像链接": await safe_get(data, 'module', 'base', 'avatar', 'avatar'),
@@ -231,7 +341,12 @@ async def parse_user_head_data(head_json: dict) -> dict:
         "卖家在售/已售商品数": await safe_get(data, 'module', 'tabs', 'item', 'number'),
         "卖家收到的评价总数": await safe_get(data, 'module', 'tabs', 'rate', 'number'),
         "卖家信用等级": seller_credit.get('text', '暂无'),
-        "买家信用等级": buyer_credit.get('text', '暂无')
+        "买家信用等级": buyer_credit.get('text', '暂无'),
+        # 同一个接口里之前没用的几项：IP 属地（可和发货地交叉核对）、粉丝/关注、实名/实人认证
+        "卖家IP属地": str(await safe_get(data, 'module', 'base', 'ipLocation', default='') or '').strip(),
+        "卖家粉丝数": _as_count(social.get('followers')),
+        "卖家关注数": _as_count(social.get('following')),
+        "卖家认证": account_certifications(await safe_get(data, 'baseInfo', 'tags', default={})),
     }
 
 
@@ -254,6 +369,8 @@ async def parse_ratings_data(ratings_json: list) -> list:
             "该用户在此交易中的角色": _user_role_from_rater_tag(rate_tag),
             "评价者昵称": data.get('raterUserNick'),
             "评价时间": data.get('gmtCreate'),
-            "评价图片": await safe_get(data, 'pictCdnUrlList', default=[])
+            "评价图片": await safe_get(data, 'pictCdnUrlList', default=[]),
+            # 评价者的 IP 属地（"中国湖北省"）：作为卖家的评价里异地买家多，说明有邮寄交易经验
+            "评价者IP属地": str(data.get('ipAddress') or '').strip(),
         })
     return parsed_list

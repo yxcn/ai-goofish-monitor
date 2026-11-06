@@ -22,6 +22,22 @@ export interface ProductInfo {
   "卖家平均回复时长"?: string;
 }
 
+// 程序按固定规则从卖家资料算出的摘要（src/seller_profile.py）
+export interface SellerProfile {
+  "摘要"?: string;
+  "身份"?: string;
+  "活跃"?: string;
+  "交易"?: string;
+  "历史"?: string;
+  "口碑"?: string;
+  "结论"?: string;
+  "商家判断"?: string;
+  "商家迹象"?: string[];
+  "信号"?: string[];
+  "品类分布"?: Record<string, number>;
+  "指标"?: Record<string, number | string | null>;
+}
+
 export interface SellerInfo {
   "卖家昵称"?: string;
   "卖家头像链接"?: string;
@@ -105,6 +121,7 @@ export interface ResultItem {
   "任务名称": string;
   "商品信息": ProductInfo;
   "卖家信息": SellerInfo;
+  "卖家画像"?: SellerProfile;
   ai_analysis: AiAnalysis;
   price_insight?: PriceInsight;
   _status?: 'active' | 'hidden' | 'expired';

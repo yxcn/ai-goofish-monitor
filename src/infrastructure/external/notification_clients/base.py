@@ -54,6 +54,9 @@ class NotificationMessage:
     seller_last_active: Optional[str] = None
     seller_reply_rate: Optional[str] = None
     seller_reply_interval: Optional[str] = None
+    # 卖家画像的结论和信号（见 src/seller_profile.py）
+    seller_profile_summary: Optional[str] = None
+    seller_signals: tuple[str, ...] = ()
 
 
 def split_risk_tags(tags: Iterable | None) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -197,6 +200,15 @@ def describe_location(region: Optional[str], city: Optional[str]) -> Optional[st
     return city or region or None
 
 
+def seller_profile_lines(profile) -> tuple[Optional[str], tuple[str, ...]]:
+    """从 卖家画像 里取推送要用的两样：一句结论和信号列表。"""
+    if not isinstance(profile, dict):
+        return None, ()
+    summary = str(profile.get("结论") or "").strip() or None
+    signals = tuple(s for s in (str(x or "").strip() for x in (profile.get("信号") or [])) if s)
+    return summary, signals
+
+
 def describe_seller(facts: dict) -> Optional[str]:
     """如 '21分钟前来过 · 24 小时回复率 100% · 平均 3分钟回复'。"""
     parts = []
@@ -278,6 +290,7 @@ class NotificationClient(ABC):
         facts = listing_facts(product_data)
         popularity = describe_popularity(facts)
         seller_line = describe_seller(facts)
+        profile_summary, signals = seller_profile_lines(product_data.get("卖家画像"))
 
         price_line = f"价格: {price}"
         if facts["original_price"]:
@@ -297,6 +310,10 @@ class NotificationClient(ABC):
             content_lines.append(f"热度: {popularity}")
         if seller_line:
             content_lines.append(f"卖家: {seller_line}")
+        if profile_summary:
+            content_lines.append(f"画像: {profile_summary}")
+        if signals:
+            content_lines.append("信号: " + " · ".join(signals))
         content_lines.append(f"原因: {reason}")
         if value_summary:
             content_lines.append(f"性价比: {value_summary}")
@@ -347,4 +364,6 @@ class NotificationClient(ABC):
             seller_last_active=facts["seller_last_active"],
             seller_reply_rate=facts["seller_reply_rate"],
             seller_reply_interval=facts["seller_reply_interval"],
+            seller_profile_summary=profile_summary,
+            seller_signals=signals,
         )

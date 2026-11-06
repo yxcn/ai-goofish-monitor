@@ -10,7 +10,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import Badge from '@/components/ui/badge/Badge.vue'
-import { ExternalLink, TrendingUp, TrendingDown, Info, User, Clock, CheckCircle2, XCircle, AlertCircle, EyeOff, Eye } from 'lucide-vue-next'
+import { ExternalLink, TrendingUp, TrendingDown, Info, User, Clock, CheckCircle2, XCircle, AlertCircle, EyeOff, Eye, ChevronDown } from 'lucide-vue-next'
 import { formatDateTime } from '@/i18n'
 
 interface Props {
@@ -95,6 +95,23 @@ const hiddenLabel = computed(() => {
 })
 
 const expanded = ref(false)
+
+// 卖家画像：程序按固定规则算出的摘要；结论和信号常驻，其余几行展开看
+const profile = props.item.卖家画像 && typeof props.item.卖家画像 === 'object' ? props.item.卖家画像 : null
+const profileExpanded = ref(false)
+const profileSignals = computed(() => (profile?.信号 ?? []).map((s) => String(s ?? '').trim()).filter(Boolean))
+const profileRows = computed(() => {
+  if (!profile) return []
+  const rows: Array<{ key: string; label: string; value: string }> = [
+    { key: 'identity', label: t('results.card.profileIdentity'), value: String(profile.身份 ?? '') },
+    { key: 'activity', label: t('results.card.profileActivity'), value: String(profile.活跃 ?? '') },
+    { key: 'trades', label: t('results.card.profileTrades'), value: String(profile.交易 ?? '') },
+    { key: 'history', label: t('results.card.profileHistory'), value: String(profile.历史 ?? '') },
+    { key: 'reputation', label: t('results.card.profileReputation'), value: String(profile.口碑 ?? '') },
+  ]
+  return rows.filter((row) => row.value && row.value !== '暂无')
+})
+const isWarningSignal = (signal: string) => signal.startsWith('⚠️')
 </script>
 
 <template>
@@ -206,6 +223,37 @@ const expanded = ref(false)
           {{ expanded ? t('results.card.collapse') : t('results.card.expand') }}
           <Info class="w-3 h-3" />
         </button>
+      </div>
+
+      <!-- Seller Profile -->
+      <div v-if="profile" class="mt-3 rounded-xl border border-slate-100 bg-slate-50/60 p-3">
+        <button
+          type="button"
+          @click="profileExpanded = !profileExpanded"
+          class="flex w-full items-center justify-between text-left"
+          :aria-expanded="profileExpanded"
+        >
+          <span class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+            <User class="w-3 h-3" /> {{ t('results.card.sellerProfile') }}
+            <span v-if="profile.摘要" class="normal-case tracking-normal font-medium text-slate-500">· {{ profile.摘要 }}</span>
+          </span>
+          <ChevronDown class="w-3 h-3 shrink-0 text-slate-400 transition-transform" :class="{ 'rotate-180': profileExpanded }" />
+        </button>
+        <p v-if="profile.结论" class="mt-1.5 text-xs leading-relaxed text-slate-600">{{ profile.结论 }}</p>
+        <div v-if="profileSignals.length" class="mt-1.5 flex flex-wrap gap-1">
+          <span
+            v-for="signal in profileSignals"
+            :key="signal"
+            class="rounded-full border px-1.5 py-0.5 text-[10px]"
+            :class="isWarningSignal(signal) ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'"
+          >{{ signal }}</span>
+        </div>
+        <dl v-if="profileExpanded && profileRows.length" class="mt-2 space-y-1 text-[11px] text-slate-500">
+          <div v-for="row in profileRows" :key="row.key" class="flex gap-2">
+            <dt class="w-8 shrink-0 font-medium text-slate-400">{{ row.label }}</dt>
+            <dd class="leading-relaxed">{{ row.value }}</dd>
+          </div>
+        </dl>
       </div>
 
       <!-- Price Stats Grid -->

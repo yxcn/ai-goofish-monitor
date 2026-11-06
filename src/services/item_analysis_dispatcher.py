@@ -5,11 +5,12 @@
 import asyncio
 import copy
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
 
 from src.attribute_rules import evaluate_attribute_rules, parse_attribute_rules
 from src.keyword_rule_engine import build_search_text, evaluate_keyword_rules
+from src.seller_profile import build_seller_profile
 
 # 属性硬规则挡掉的商品，analysis_source 用这个值，结果页能和 AI / 关键词结论区分开
 ATTRIBUTE_RULE_SOURCE = "attribute_rule"
@@ -36,6 +37,8 @@ class ItemAnalysisJob:
     registration_duration_text: str
     # 属性硬规则（每条 "属性名 运算符 值"），不通过的商品不采集卖家、不调 AI
     attribute_rules: tuple[str, ...] = ()
+    # 详情接口 sellerDO 里的账号级信息（卖出件数、注册日期、实人认证），并进 卖家信息
+    seller_detail: dict = field(default_factory=dict)
 
 
 class ItemAnalysisDispatcher:
@@ -85,16 +88,19 @@ class ItemAnalysisDispatcher:
                 f"{'；'.join(rejection['failed_rules'])}，跳过卖家采集和 AI 分析。"
             )
             record["卖家信息"] = {
+                **copy.deepcopy(job.seller_detail or {}),
                 "卖家芝麻信用": job.zhima_credit_text,
                 "卖家注册时长": job.registration_duration_text,
             }
             record["ai_analysis"] = rejection
         else:
             record["卖家信息"] = await self._load_seller_info(job)
+            # 画像在 AI 分析之前算好，AI 拿到的是带画像的完整记录
+            record["卖家画像"] = build_seller_profile(record)
             record["ai_analysis"] = await self._build_analysis_result(job, record)
         if await self._saver(record, job.keyword):
             self.completed_count += 1
-        await self._notify_if_recommended(item_data, record["ai_analysis"])
+        await self._notify_if_recommended(record)
 
     def _check_attribute_rules(self, job: ItemAnalysisJob, record: dict) -> Optional[dict]:
         if not job.attribute_rules:
@@ -124,6 +130,7 @@ class ItemAnalysisDispatcher:
             except Exception as exc:
                 print(f"   [卖家] 采集卖家 {job.seller_id} 信息失败: {exc}")
         merged = copy.deepcopy(seller_info or {})
+        merged.update(copy.deepcopy(job.seller_detail or {}))
         merged["卖家芝麻信用"] = job.zhima_credit_text
         merged["卖家注册时长"] = job.registration_duration_text
         return merged
@@ -202,11 +209,15 @@ class ItemAnalysisDispatcher:
             except Exception as exc:
                 print(f"   [图片] 删除图片文件时出错: {exc}")
 
-    async def _notify_if_recommended(self, item_data: dict, analysis_result: dict) -> None:
+    async def _notify_if_recommended(self, record: dict) -> None:
+        item_data = record.get("商品信息", {}) or {}
+        analysis_result = record.get("ai_analysis") or {}
         if not analysis_result.get("is_recommended"):
             return
-        # 通知层只拿到商品信息，把分析结果一起带上，risk_tags 才能变成消息里的需确认清单
+        # 通知层只拿到商品信息，把分析结果和卖家画像一起带上，才能变成消息里的需确认清单和画像行
         notify_data = {**item_data, "ai_analysis": analysis_result}
+        if record.get("卖家画像"):
+            notify_data["卖家画像"] = record["卖家画像"]
         try:
             await self._notifier(notify_data, analysis_result.get("reason", "无"))
         except Exception as exc:

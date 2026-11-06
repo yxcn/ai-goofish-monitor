@@ -342,6 +342,54 @@ def test_listing_facts_skip_placeholders_and_same_original_price():
     }
 
 
+def _listing_with_profile():
+    return {
+        **_listing_with_facts(),
+        "卖家画像": {
+            "结论": "可见记录无商家迹象，按个人卖家对待；无卖家口碑，建议验货宝或担保交易",
+            "信号": ["⚠️ 卖家零评价", "✅ 认证齐全", "", None],
+        },
+    }
+
+
+def test_build_message_includes_seller_profile_lines():
+    message = _OkClient(enabled=True, pcurl_to_mobile=False)._build_message(_listing_with_profile(), "价格合适")
+    assert message.seller_profile_summary == "可见记录无商家迹象，按个人卖家对待；无卖家口碑，建议验货宝或担保交易"
+    assert message.seller_signals == ("⚠️ 卖家零评价", "✅ 认证齐全")
+    assert (
+        "卖家: 21分钟前来过 · 24 小时回复率 100% · 平均 3分钟回复\n"
+        "画像: 可见记录无商家迹象，按个人卖家对待；无卖家口碑，建议验货宝或担保交易\n"
+        "信号: ⚠️ 卖家零评价 · ✅ 认证齐全\n"
+        "原因: 价格合适\n"
+    ) in message.content
+    # 画像不是 dict 时不加行
+    message = _OkClient(enabled=True, pcurl_to_mobile=False)._build_message({**_listing_with_facts(), "卖家画像": "x"}, "价格合适")
+    assert message.seller_profile_summary is None and "画像:" not in message.content
+
+
+def test_telegram_client_renders_seller_profile_lines(monkeypatch):
+    from src.infrastructure.external.notification_clients.telegram_client import TelegramClient
+
+    captured = {}
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True}
+
+    monkeypatch.setattr("requests.post", lambda url, json=None, headers=None, timeout=None: captured.update(json=json) or _FakeResponse())
+    asyncio.run(TelegramClient("123:token", "4567", pcurl_to_mobile=False).send(_listing_with_profile(), "价格合适"))
+
+    assert (
+        "👤 卖家: 21分钟前来过 · 24 小时回复率 100% · 平均 3分钟回复\n"
+        "🧾 画像: 可见记录无商家迹象，按个人卖家对待；无卖家口碑，建议验货宝或担保交易\n"
+        "🚩 信号: ⚠️ 卖家零评价 · ✅ 认证齐全\n"
+        "📝 原因: 价格合适"
+    ) in captured["json"]["text"]
+
+
 def test_location_merges_province_and_city_without_repeating():
     from src.infrastructure.external.notification_clients.base import describe_location, describe_seller
 

@@ -36,6 +36,7 @@ from src.parsers import (
     parse_item_detail_extras,
     parse_item_detail_facts,
     parse_ratings_data,
+    parse_seller_detail,
     parse_user_head_data,
 )
 from src.utils import (
@@ -1208,6 +1209,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                         seller_id=str(user_id) if user_id else None,
                                         zhima_credit_text=zhima_credit_text,
                                         registration_duration_text=registration_duration_text,
+                                        seller_detail=parse_seller_detail(seller_do),
                                     )
                                 )
 
