@@ -22,6 +22,29 @@ from src.services.task_service import TaskService
 from src.services.task_generation_service import TaskGenerationService
 
 
+REPO_PROMPTS_DIR = repo_root / "prompts"
+
+
+def _repo_prompt_files() -> set[str]:
+    if not REPO_PROMPTS_DIR.is_dir():
+        return set()
+    return {path.name for path in REPO_PROMPTS_DIR.iterdir()}
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _repo_prompts_untouched():
+    # 测试曾把 AI 生成的分析标准写进仓库的 prompts/，每跑一次多一个文件；整轮跑完核对一次
+    before = _repo_prompt_files()
+    yield
+    after = _repo_prompt_files()
+    added = sorted(after - before)
+    removed = sorted(before - after)
+    assert not added and not removed, (
+        f"测试改动了仓库的 prompts/ 目录：新增 {added}，删除 {removed}。"
+        "写文件的测试请用 monkeypatch.chdir(tmp_path)。"
+    )
+
+
 @pytest.fixture(autouse=True)
 def _fresh_sqlite_bootstrap():
     # bootstrap_sqlite_storage() 每个库路径只跑一次 DDL；测试之间切目录/换库，标记要清掉
@@ -106,7 +129,9 @@ class FakeSchedulerService:
 
 
 @pytest.fixture()
-def api_context(tmp_path):
+def api_context(tmp_path, monkeypatch):
+    # 任务接口会按相对路径写 prompts/ 等目录（如 AI 生成的分析标准），切到临时目录，别留在仓库里
+    monkeypatch.chdir(tmp_path)
     config_file = tmp_path / "config.json"
     config_file.write_text("[]", encoding="utf-8")
     db_path = tmp_path / "app.sqlite3"
