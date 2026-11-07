@@ -36,7 +36,7 @@ const skeletonItems = Array.from({ length: props.skeletonCount ?? 8 }, (_, index
         :key="item"
         class="app-surface overflow-hidden"
       >
-        <div class="aspect-[16/10] animate-pulse bg-slate-200/70"></div>
+        <div class="aspect-[2/1] animate-pulse bg-slate-200/70"></div>
         <div class="space-y-3 p-4">
           <div class="h-5 w-4/5 animate-pulse rounded bg-slate-200/70"></div>
           <div class="h-7 w-1/3 animate-pulse rounded bg-slate-200/70"></div>

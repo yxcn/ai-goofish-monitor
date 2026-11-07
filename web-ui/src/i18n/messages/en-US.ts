@@ -344,6 +344,7 @@ const enUS = {
       aiMatch: 'AI Match',
       crawledAt: 'Crawled {time}',
       analysisSkipped: 'Analysis skipped',
+      priceShort: { listing: 'list', sold: 'sold', low: 'low' },
       passSummary: '{count} more passed',
       allPass: 'All {count} passed',
       collapsePass: 'Hide passed',

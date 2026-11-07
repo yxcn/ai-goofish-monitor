@@ -80,7 +80,7 @@ const region = computed(() => {
   if (province && city && !province.includes(city) && !city.includes(province)) return `${province} ${city}`
   return city || province
 })
-// 一行事实：紧凑模式只留想要数、地区、发布时间、最近活跃；浏览/收藏/回复率放到详情里
+// 一行事实：紧凑模式只留想要数、地区、发布时间；浏览/收藏/最近活跃/回复率放到详情里
 interface Fact { key: string; text: string; detail: boolean }
 const facts = computed<Fact[]>(() => {
   const list: Fact[] = []
@@ -92,7 +92,7 @@ const facts = computed<Fact[]>(() => {
   const lastActive = String(info.value.卖家最近活跃 ?? '').trim()
   const replyRate = String(info.value.卖家24小时回复率 ?? '').trim()
   const replyInterval = String(info.value.卖家平均回复时长 ?? '').trim()
-  if (lastActive) list.push({ key: 'active', text: lastActive, detail: false })
+  if (lastActive) list.push({ key: 'active', text: lastActive, detail: true })
   if (replyRate) list.push({ key: 'replyRate', text: t('results.card.replyRate', { rate: replyRate }), detail: true })
   if (replyInterval) list.push({ key: 'replyIn', text: t('results.card.replyIn', { time: replyInterval }), detail: true })
   return list.filter((fact) => detailsOpen.value || !fact.detail)
@@ -204,6 +204,10 @@ const profileSignals = computed(() => (profile.value?.信号 ?? [])
   .map((s) => String(s ?? '').trim())
   .filter(Boolean)
   .sort((a, b) => Number(isWarningSignal(b)) - Number(isWarningSignal(a))))
+// 紧凑模式整块只占三行：标题一行 + 最多 3 个信号（多出的折成 +N），展开才看全
+const MAX_COMPACT_SIGNALS = 3
+const visibleSignals = computed(() => (profileOpen.value ? profileSignals.value : profileSignals.value.slice(0, MAX_COMPACT_SIGNALS)))
+const hiddenSignalCount = computed(() => profileSignals.value.length - visibleSignals.value.length)
 const profileRows = computed(() => {
   const current = profile.value
   if (!current) return []
@@ -242,14 +246,14 @@ const priceVerdict = computed(() => {
   return { label: t(`results.card.verdict.${key}`), detail, style }
 })
 const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
-// 紧凑模式下三个参考价挤成一行
+// 紧凑模式下三个参考价挤成一行，用两字短标签
 const priceLine = computed(() => {
   const insight = priceInsight.value
   if (!insight) return []
   return [
-    { key: 'median', label: t('results.card.listingMedian'), value: fmtPrice(insight.market_median_price) },
-    { key: 'sold', label: t('results.card.soldReference'), value: fmtPrice(soldReference.value?.median_price) },
-    { key: 'low', label: t('results.card.historicalLow'), value: fmtPrice(insight.min_price) },
+    { key: 'median', label: t('results.card.priceShort.listing'), value: fmtPrice(insight.market_median_price) },
+    { key: 'sold', label: t('results.card.priceShort.sold'), value: fmtPrice(soldReference.value?.median_price) },
+    { key: 'low', label: t('results.card.priceShort.low'), value: fmtPrice(insight.min_price) },
   ].filter((entry) => entry.value !== '—')
 })
 </script>
@@ -257,7 +261,7 @@ const priceLine = computed(() => {
 <template>
   <Card class="group flex flex-col border-none shadow-glass hover:shadow-card-hover transition-all duration-300 rounded-2xl overflow-hidden bg-white/80 backdrop-blur-sm" :class="{ 'opacity-50': isHidden }">
     <!-- Image Header -->
-    <div class="relative aspect-[16/10] overflow-hidden">
+    <div class="relative aspect-[2/1] overflow-hidden">
       <div class="absolute inset-0 bg-slate-200 animate-pulse" v-if="!imageUrl"></div>
       <img
         v-else
@@ -305,7 +309,7 @@ const priceLine = computed(() => {
       </div>
     </div>
 
-    <CardHeader class="px-4 pt-3 pb-1.5">
+    <CardHeader class="px-3 pt-2.5 pb-1.5">
       <div class="flex justify-between items-start gap-3">
         <CardTitle class="text-base font-semibold text-slate-800 line-clamp-2 leading-snug flex-grow h-10">
           <a :href="info.商品链接" target="_blank" rel="noopener noreferrer" class="hover:text-primary transition-colors">
@@ -323,7 +327,7 @@ const priceLine = computed(() => {
       </div>
     </CardHeader>
 
-    <CardContent class="px-4 pt-1.5 pb-3 flex-grow">
+    <CardContent class="px-3 pt-1.5 pb-2.5 flex-grow">
       <!-- AI Insight Section -->
       <div class="rounded-xl p-2.5 border border-slate-100" :class="recommendationStatus.bg">
         <div class="flex items-center justify-between" :class="criteriaChips.length || showReason ? 'mb-1.5' : ''">
@@ -405,53 +409,25 @@ const priceLine = computed(() => {
         </template>
       </div>
 
-      <!-- Seller Profile -->
-      <div v-if="profile" class="mt-2 rounded-xl border border-slate-100 bg-slate-50/60 p-2.5">
-        <button
-          type="button"
-          @click="profileOverride = !profileOpen"
-          class="flex w-full items-center justify-between text-left"
-          :aria-expanded="profileOpen"
-        >
-          <span class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-            <User class="w-3 h-3" /> {{ t('results.card.sellerProfile') }}
-            <span v-if="profile.摘要" class="normal-case tracking-normal font-medium text-slate-500">· {{ profile.摘要 }}</span>
-          </span>
-          <ChevronDown class="w-3 h-3 shrink-0 text-slate-400 transition-transform" :class="{ 'rotate-180': profileOpen }" />
-        </button>
-        <div v-if="profileSignals.length" class="mt-1.5 flex flex-wrap gap-1">
-          <span
-            v-for="signal in profileSignals"
-            :key="signal"
-            class="rounded-full border px-1.5 py-0.5 text-[10px]"
-            :class="isWarningSignal(signal) ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'"
-          >{{ signal }}</span>
-        </div>
-        <p v-if="profileOpen && profile.结论" class="mt-1.5 text-xs leading-relaxed text-slate-600">{{ profile.结论 }}</p>
-        <dl v-if="profileOpen && profileRows.length" class="mt-2 space-y-1 text-[11px] text-slate-500">
-          <div v-for="row in profileRows" :key="row.key" class="flex gap-2">
-            <dt class="w-8 shrink-0 font-medium text-slate-400">{{ row.label }}</dt>
-            <dd class="leading-relaxed">{{ row.value }}</dd>
-          </div>
-        </dl>
-      </div>
-
-      <!-- Price Stats：紧凑模式一行，详情模式贵贱行 + 三个格子 -->
+      <!-- Price Stats：紧凑模式两行（贵贱 + 三个参考价），详情模式贵贱行 + 三个格子 -->
       <div v-if="priceInsight?.observation_count" class="mt-2">
         <div
           v-if="!detailsOpen"
-          class="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-xl border px-2.5 py-1.5 text-[11px]"
+          class="rounded-xl border px-2.5 py-1.5 text-[11px] leading-snug"
           :class="priceVerdict ? priceVerdict.style : 'border-dashed border-slate-200 text-slate-500'"
         >
-          <template v-if="priceVerdict">
-            <span class="font-bold">{{ priceVerdict.label }}</span>
-            <span>{{ priceVerdict.detail }}</span>
-          </template>
-          <span v-else class="text-slate-400">{{ t('results.card.verdict.insufficient') }}</span>
-          <template v-for="entry in priceLine" :key="entry.key">
-            <span class="text-slate-300" aria-hidden="true">·</span>
-            <span><span class="text-slate-400">{{ entry.label }}</span> <span class="font-semibold">{{ entry.value }}</span></span>
-          </template>
+          <div class="flex flex-wrap items-center gap-x-1.5">
+            <template v-if="priceVerdict">
+              <span class="font-bold">{{ priceVerdict.label }}</span>
+              <span>{{ priceVerdict.detail }}</span>
+            </template>
+            <span v-else class="text-slate-400">{{ t('results.card.verdict.insufficient') }}</span>
+          </div>
+          <div v-if="priceLine.length" class="mt-0.5 flex flex-wrap items-center gap-x-2 text-slate-500">
+            <span v-for="entry in priceLine" :key="entry.key" class="whitespace-nowrap">
+              <span class="text-slate-400">{{ entry.label }}</span> <span class="font-semibold text-slate-700">{{ entry.value }}</span>
+            </span>
+          </div>
         </div>
         <div v-else class="space-y-2">
           <div v-if="priceVerdict" class="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-xl border px-3 py-1.5 text-[11px]" :class="priceVerdict.style">
@@ -489,47 +465,87 @@ const priceLine = computed(() => {
         </div>
       </div>
 
-      <!-- 收件箱操作 + 详情开关 -->
-      <div class="mt-2.5 flex items-center justify-between gap-1.5">
-        <div class="flex flex-wrap gap-1">
-          <button
-            v-for="action in reviewActions"
-            :key="action.status"
-            type="button"
-            class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            :class="action.cls"
-            @click="emit('review', props.item, action.status)"
-          >
-            <component :is="action.icon" class="w-3 h-3" />
-            {{ action.label }}
-          </button>
-        </div>
+      <!-- Seller Profile：紧凑模式三行（标题 + 最多 3 个信号），展开看结论和明细 -->
+      <div v-if="profile" class="mt-2 rounded-xl border border-slate-100 bg-slate-50/60 p-2.5">
         <button
           type="button"
-          class="inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          @click="profileOverride = !profileOpen"
+          class="flex w-full items-center justify-between gap-2 text-left"
+          :aria-expanded="profileOpen"
+        >
+          <span class="flex min-w-0 flex-1 items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+            <User class="w-3 h-3 shrink-0" />
+            <span class="shrink-0">{{ t('results.card.sellerProfile') }}</span>
+            <span v-if="profile.摘要" class="min-w-0 normal-case tracking-normal font-medium text-slate-500" :class="profileOpen ? '' : 'truncate'">· {{ profile.摘要 }}</span>
+          </span>
+          <ChevronDown class="w-3 h-3 shrink-0 text-slate-400 transition-transform" :class="{ 'rotate-180': profileOpen }" />
+        </button>
+        <div v-if="visibleSignals.length" class="mt-1.5 flex flex-wrap gap-1">
+          <span
+            v-for="signal in visibleSignals"
+            :key="signal"
+            class="rounded-full border px-1.5 py-0.5 text-[10px]"
+            :class="isWarningSignal(signal) ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'"
+          >{{ signal }}</span>
+          <button
+            v-if="hiddenSignalCount > 0"
+            type="button"
+            class="rounded-full border border-dashed border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-500 transition-colors hover:bg-white"
+            :aria-expanded="false"
+            @click="profileOverride = true"
+          >+{{ hiddenSignalCount }}</button>
+        </div>
+        <p v-if="profileOpen && profile.结论" class="mt-1.5 text-xs leading-relaxed text-slate-600">{{ profile.结论 }}</p>
+        <dl v-if="profileOpen && profileRows.length" class="mt-2 space-y-1 text-[11px] text-slate-500">
+          <div v-for="row in profileRows" :key="row.key" class="flex gap-2">
+            <dt class="w-8 shrink-0 font-medium text-slate-400">{{ row.label }}</dt>
+            <dd class="leading-relaxed">{{ row.value }}</dd>
+          </div>
+        </dl>
+      </div>
+
+      <!-- 收件箱操作 -->
+      <div class="mt-2.5 flex flex-wrap gap-1">
+        <button
+          v-for="action in reviewActions"
+          :key="action.status"
+          type="button"
+          class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :class="action.cls"
+          @click="emit('review', props.item, action.status)"
+        >
+          <component :is="action.icon" class="w-3 h-3" />
+          {{ action.label }}
+        </button>
+      </div>
+    </CardContent>
+
+    <!-- 页脚：抓取时间 | 展开/收起 · 详情链接；昵称已经在卖家画像标题里，没有画像时才放这 -->
+    <CardFooter class="px-3 py-2 bg-slate-50/30 border-t border-slate-100/60 flex items-center justify-between gap-2 text-[10px]">
+      <div class="flex min-w-0 items-center gap-2 text-slate-400">
+        <div v-if="!profile" class="flex min-w-0 items-center gap-1">
+          <User class="w-3 h-3 shrink-0" />
+          <span class="truncate max-w-[60px]">{{ seller.卖家昵称 || info.卖家昵称 || t('results.card.anonymous') }}</span>
+        </div>
+        <div class="flex shrink-0 items-center gap-1">
+          <Clock class="w-3 h-3" />
+          <span>{{ t('results.card.crawledAt', { time: crawlTime }) }}</span>
+        </div>
+      </div>
+      <div class="flex shrink-0 items-center gap-2.5">
+        <button
+          type="button"
+          class="inline-flex items-center gap-0.5 font-medium text-slate-400 transition-colors hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
           :aria-expanded="detailsOpen"
           @click="toggleDetails"
         >
           {{ detailsOpen ? t('results.card.hideDetails') : t('results.card.showDetails') }}
           <ChevronDown class="w-3 h-3 transition-transform" :class="{ 'rotate-180': detailsOpen }" />
         </button>
+        <a :href="info.商品链接" target="_blank" rel="noopener noreferrer" class="flex items-center gap-1 text-primary font-bold hover:gap-1.5 transition-all">
+          {{ t('results.card.detail') }} <ExternalLink class="w-3 h-3" />
+        </a>
       </div>
-    </CardContent>
-
-    <CardFooter class="px-4 py-2 bg-slate-50/30 border-t border-slate-100/60 flex items-center justify-between text-[10px]">
-      <div class="flex items-center gap-3 text-slate-400">
-        <div class="flex items-center gap-1">
-          <User class="w-3 h-3" />
-          <span class="truncate max-w-[60px]">{{ seller.卖家昵称 || info.卖家昵称 || t('results.card.anonymous') }}</span>
-        </div>
-        <div class="flex items-center gap-1">
-          <Clock class="w-3 h-3" />
-          <span>{{ t('results.card.crawledAt', { time: crawlTime }) }}</span>
-        </div>
-      </div>
-      <a :href="info.商品链接" target="_blank" rel="noopener noreferrer" class="flex items-center gap-1 text-primary font-bold hover:gap-1.5 transition-all">
-        {{ t('results.card.detail') }} <ExternalLink class="w-3 h-3" />
-      </a>
     </CardFooter>
   </Card>
 </template>

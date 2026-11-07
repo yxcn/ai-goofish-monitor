@@ -344,6 +344,7 @@ const zhCN = {
       aiMatch: 'AI 匹配度',
       crawledAt: '抓取 {time}',
       analysisSkipped: '已跳过分析',
+      priceShort: { listing: '挂牌', sold: '成交', low: '最低' },
       passSummary: '其余 {count} 项通过',
       allPass: '{count} 项全部通过',
       collapsePass: '收起通过项',
