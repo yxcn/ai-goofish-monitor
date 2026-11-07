@@ -59,7 +59,7 @@ const enUSExtra = {
       titleExcludeKeywordsPlaceholder: 'Example: motherboard, keyboard, parts',
       attributeRules: 'Attribute Rules',
       attributeRulesHint: 'Optional. Deterministic checks on the structured attributes from the Goofish detail page (category, brand, memory, storage, repairs, condition...) that reject obviously unfit listings before the AI is called. One rule per line: attribute operator value. Operators: = / != / 包含 (contains) / 不包含 (not contains) / >= / <= / > / <; capacities understand GB and TB. A rule is skipped when the listing lacks that attribute.',
-      attributeRulesPlaceholder: '分类 = 笔记本电脑\n内存容量 >= 16GB\n硬盘容量 >= 256GB\n拆修 不包含 维修',
+      attributeRulesPlaceholder: '分类 = 笔记本电脑\n内存容量 >= 16GB\n硬盘容量 >= 256GB\n拆修 包含 无',
       decisionMode: 'Decision Mode',
       decisionModePlaceholder: 'Select a decision mode',
       aiMode: 'AI Decision',

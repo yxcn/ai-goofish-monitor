@@ -59,7 +59,7 @@ const zhCNExtra = {
       titleExcludeKeywordsPlaceholder: '例如：主板, 键盘, 屏幕总成, 配件',
       attributeRules: '属性硬规则',
       attributeRulesHint: '可选。用闲鱼详情里的结构化属性（分类、品牌、内存容量、硬盘容量、拆修、成色等）在调 AI 之前挡掉明显不合格的商品。每行一条：属性名 运算符 值。运算符：= / != / 包含 / 不包含 / >= / <= / > / <，容量支持 GB、TB。商品没写该属性时跳过这条，交给 AI。',
-      attributeRulesPlaceholder: '分类 = 笔记本电脑\n内存容量 >= 16GB\n硬盘容量 >= 256GB\n拆修 不包含 维修',
+      attributeRulesPlaceholder: '分类 = 笔记本电脑\n内存容量 >= 16GB\n硬盘容量 >= 256GB\n拆修 包含 无',
       decisionMode: '判断模式',
       decisionModePlaceholder: '请选择判断模式',
       aiMode: 'AI判断',

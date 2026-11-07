@@ -11,7 +11,7 @@ LAPTOP_RULES = """
 分类 = 笔记本电脑
 内存容量 >= 16GB
 硬盘容量 >= 256GB
-拆修 不包含 维修
+拆修 包含 无
 """
 
 
@@ -36,7 +36,7 @@ def test_normalize_splits_lines_dedupes_and_canonicalizes_spacing():
         "分类 = 笔记本电脑",
         "内存容量 >= 16GB",
         "硬盘容量 >= 256GB",
-        "拆修 不包含 维修",
+        "拆修 包含 无",
     ]
     assert normalize_attribute_rules(["内存容量>=16GB", "内存容量 >= 16gb", ""]) == ["内存容量 >= 16GB"]
     assert normalize_attribute_rules(None) == []
@@ -52,10 +52,13 @@ def test_laptop_rules_reject_phones_and_8gb_machines():
     assert evaluate_attribute_rules(small, rules) == ["内存容量 >= 16GB（实际：8GB）"]
 
     repaired = {"分类": "笔记本电脑", "内存容量": "16GB", "硬盘容量": "256GB", "拆修": "有维修"}
-    assert evaluate_attribute_rules(repaired, rules) == ["拆修 不包含 维修（实际：有维修）"]
+    assert evaluate_attribute_rules(repaired, rules) == ["拆修 包含 无（实际：有维修）"]
 
+    # 闲鱼的拆修属性值有「无任何拆修」「无第三方维修」「有维修」：按子串排除“维修”会把“无第三方维修”也否掉
     good = {"分类": "笔记本电脑", "内存容量": "16GB", "硬盘容量": "1T", "拆修": "无第三方维修"}
-    assert evaluate_attribute_rules(good, rules) == ["拆修 不包含 维修（实际：无第三方维修）"]
+    assert evaluate_attribute_rules(good, rules) == []
+    untouched = {"分类": "笔记本电脑", "内存容量": "16GB", "硬盘容量": "512GB", "拆修": "无任何拆修"}
+    assert evaluate_attribute_rules(untouched, rules) == []
 
 
 def test_missing_or_unparseable_attributes_are_left_to_the_ai():
