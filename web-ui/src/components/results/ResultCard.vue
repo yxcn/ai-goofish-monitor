@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { CriteriaEntry, ResultItem, ReviewStatus } from '@/types/result.d.ts'
 import {
@@ -15,6 +15,8 @@ import { formatDateTime } from '@/i18n'
 
 interface Props {
   item: ResultItem
+  /** 页面级「详细模式」：true 时所有折叠块默认展开；卡片上的开关只覆盖自己 */
+  details?: boolean
 }
 
 const props = defineProps<Props>()
@@ -29,6 +31,13 @@ const info = computed(() => props.item.商品信息)
 const seller = computed(() => props.item.卖家信息)
 const ai = computed(() => props.item.ai_analysis)
 const priceInsight = computed(() => props.item.price_insight)
+
+// 紧凑 / 详细：默认只留做决定要看的东西（价格、不符项、风险信号、贵贱），其余点「详情」再展开
+const detailsOverride = ref<boolean | null>(null)
+const detailsOpen = computed(() => detailsOverride.value ?? props.details ?? false)
+function toggleDetails() {
+  detailsOverride.value = !detailsOpen.value
+}
 
 // SKIP_AI_ANALYSIS 模式：is_recommended 仍为 true 但 analysis_source 为 'skipped'，不算 AI 推荐（不打精选、不显示匹配度）
 const isSkipped = computed(() => ai.value?.analysis_source === 'skipped')
@@ -71,16 +80,22 @@ const region = computed(() => {
   if (province && city && !province.includes(city) && !city.includes(province)) return `${province} ${city}`
   return city || province
 })
-// 卖家活跃度：最近活跃（“21分钟前来过”）、24 小时回复率、平均回复时长
-const sellerFacts = computed(() => {
-  const parts: string[] = []
+// 一行事实：紧凑模式只留想要数、地区、发布时间、最近活跃；浏览/收藏/回复率放到详情里
+interface Fact { key: string; text: string; detail: boolean }
+const facts = computed<Fact[]>(() => {
+  const list: Fact[] = []
+  if (wantsCount.value !== null) list.push({ key: 'wants', text: t('results.card.wants', { count: wantsCount.value }), detail: false })
+  if (viewCount.value !== null) list.push({ key: 'views', text: t('results.card.views', { count: viewCount.value }), detail: true })
+  if (favoriteCount.value !== null) list.push({ key: 'favorites', text: t('results.card.favorites', { count: favoriteCount.value }), detail: true })
+  if (region.value) list.push({ key: 'region', text: region.value, detail: false })
+  if (publishTime.value) list.push({ key: 'published', text: t('results.card.published', { time: publishTime.value }), detail: false })
   const lastActive = String(info.value.卖家最近活跃 ?? '').trim()
   const replyRate = String(info.value.卖家24小时回复率 ?? '').trim()
   const replyInterval = String(info.value.卖家平均回复时长 ?? '').trim()
-  if (lastActive) parts.push(lastActive)
-  if (replyRate) parts.push(t('results.card.replyRate', { rate: replyRate }))
-  if (replyInterval) parts.push(t('results.card.replyIn', { time: replyInterval }))
-  return parts
+  if (lastActive) list.push({ key: 'active', text: lastActive, detail: false })
+  if (replyRate) list.push({ key: 'replyRate', text: t('results.card.replyRate', { rate: replyRate }), detail: true })
+  if (replyInterval) list.push({ key: 'replyIn', text: t('results.card.replyIn', { time: replyInterval }), detail: true })
+  return list.filter((fact) => detailsOpen.value || !fact.detail)
 })
 // 划线原价：占位符（暂无）或和现价相同时不显示
 const originalPrice = computed(() => {
@@ -89,7 +104,7 @@ const originalPrice = computed(() => {
   const digits = (text: string) => text.replace(/[^\d.]/g, '')
   return digits(raw) && digits(raw) === digits(String(info.value.当前售价 ?? '')) ? '' : raw
 })
-const hasListingFacts = computed(() => listingTags.value.length > 0 || wantsCount.value !== null || viewCount.value !== null || favoriteCount.value !== null || !!publishTime.value || !!region.value)
+const hasListingFacts = computed(() => listingTags.value.length > 0 || facts.value.length > 0)
 const isHidden = computed(() => props.item._effective_hidden === true || props.item._status === 'hidden')
 const isRuleHidden = computed(() => props.item._hidden_reason === 'rule')
 const canToggleBlock = computed(() => props.item._hidden_reason !== 'rule' && props.item._hidden_reason !== 'expired')
@@ -139,11 +154,21 @@ const criteriaChips = computed<CriteriaChip[]>(() => {
     })
     .sort((a, b) => CHIP_ORDER[a.state] - CHIP_ORDER[b.state])
 })
+const hasFail = computed(() => criteriaChips.value.some((chip) => chip.state === 'fail'))
+const passCount = computed(() => criteriaChips.value.filter((chip) => chip.state === 'pass').length)
+// 紧凑模式下通过项折成一个「其余 N 项通过」，红黄灰的才摊开
+const passExpanded = ref(false)
+const visibleChips = computed(() => (detailsOpen.value || passExpanded.value
+  ? criteriaChips.value
+  : criteriaChips.value.filter((chip) => chip.state !== 'pass')))
+const hiddenPassCount = computed(() => criteriaChips.value.length - visibleChips.value.length)
 const activeChipKey = ref<string | null>(null)
-const activeChip = computed(() => criteriaChips.value.find((chip) => chip.key === activeChipKey.value) ?? null)
+const activeChip = computed(() => visibleChips.value.find((chip) => chip.key === activeChipKey.value) ?? null)
 function toggleChip(key: string) {
   activeChipKey.value = activeChipKey.value === key ? null : key
 }
+// 理由文字：有否决项或者根本没有标签（老记录）时才常驻，否则放进详情
+const showReason = computed(() => detailsOpen.value || criteriaChips.value.length === 0 || hasFail.value)
 
 // 收件箱处理状态和可做的操作
 const reviewStatus = computed<ReviewStatus>(() => props.item._review_status ?? 'new')
@@ -170,10 +195,15 @@ const reviewActions = computed<ReviewAction[]>(() => {
   }
 })
 
-// 卖家画像：程序按固定规则算出的摘要；结论和信号常驻，其余几行展开看
+// 卖家画像：程序按固定规则算出的摘要；信号常驻（⚠️ 在前），结论和明细在详情里
 const profile = computed(() => (props.item.卖家画像 && typeof props.item.卖家画像 === 'object' ? props.item.卖家画像 : null))
-const profileExpanded = ref(false)
-const profileSignals = computed(() => (profile.value?.信号 ?? []).map((s) => String(s ?? '').trim()).filter(Boolean))
+const profileOverride = ref<boolean | null>(null)
+const profileOpen = computed(() => profileOverride.value ?? detailsOpen.value)
+const isWarningSignal = (signal: string) => signal.startsWith('⚠️')
+const profileSignals = computed(() => (profile.value?.信号 ?? [])
+  .map((s) => String(s ?? '').trim())
+  .filter(Boolean)
+  .sort((a, b) => Number(isWarningSignal(b)) - Number(isWarningSignal(a))))
 const profileRows = computed(() => {
   const current = profile.value
   if (!current) return []
@@ -186,7 +216,13 @@ const profileRows = computed(() => {
   ]
   return rows.filter((row) => row.value && row.value !== '暂无')
 })
-const isWarningSignal = (signal: string) => signal.startsWith('⚠️')
+
+// 页面级开关切换时，卡片自己的覆盖都清掉，跟着页面走
+watch(() => props.details, () => {
+  detailsOverride.value = null
+  profileOverride.value = null
+  passExpanded.value = false
+})
 
 // 贵贱判断：后端先比成交参考价，样本不足再比挂牌中位价；都不够就不下结论
 const fmtPrice = (value: number | null | undefined) => (value === null || value === undefined ? '—' : `¥${Math.round(value)}`)
@@ -206,12 +242,22 @@ const priceVerdict = computed(() => {
   return { label: t(`results.card.verdict.${key}`), detail, style }
 })
 const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
+// 紧凑模式下三个参考价挤成一行
+const priceLine = computed(() => {
+  const insight = priceInsight.value
+  if (!insight) return []
+  return [
+    { key: 'median', label: t('results.card.listingMedian'), value: fmtPrice(insight.market_median_price) },
+    { key: 'sold', label: t('results.card.soldReference'), value: fmtPrice(soldReference.value?.median_price) },
+    { key: 'low', label: t('results.card.historicalLow'), value: fmtPrice(insight.min_price) },
+  ].filter((entry) => entry.value !== '—')
+})
 </script>
 
 <template>
-  <Card class="group flex flex-col h-full border-none shadow-glass hover:shadow-card-hover transition-all duration-300 rounded-2xl overflow-hidden bg-white/80 backdrop-blur-sm" :class="{ 'opacity-50': isHidden }">
+  <Card class="group flex flex-col border-none shadow-glass hover:shadow-card-hover transition-all duration-300 rounded-2xl overflow-hidden bg-white/80 backdrop-blur-sm" :class="{ 'opacity-50': isHidden }">
     <!-- Image Header -->
-    <div class="relative aspect-[4/3] overflow-hidden">
+    <div class="relative aspect-[16/10] overflow-hidden">
       <div class="absolute inset-0 bg-slate-200 animate-pulse" v-if="!imageUrl"></div>
       <img
         v-else
@@ -259,7 +305,7 @@ const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
       </div>
     </div>
 
-    <CardHeader class="p-4 pb-2">
+    <CardHeader class="px-4 pt-3 pb-1.5">
       <div class="flex justify-between items-start gap-3">
         <CardTitle class="text-base font-semibold text-slate-800 line-clamp-2 leading-snug flex-grow h-10">
           <a :href="info.商品链接" target="_blank" rel="noopener noreferrer" class="hover:text-primary transition-colors">
@@ -267,28 +313,20 @@ const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
           </a>
         </CardTitle>
       </div>
-      <div class="flex items-baseline gap-1 mt-2">
+      <div class="flex items-baseline gap-1 mt-1.5">
         <span class="text-2xl font-bold text-rose-600 tracking-tight">{{ info.当前售价 }}</span>
         <span v-if="originalPrice" class="text-xs text-slate-400 line-through mb-1">{{ originalPrice }}</span>
       </div>
-      <div v-if="hasListingFacts" class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
+      <div v-if="hasListingFacts" class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
         <Badge v-for="tag in listingTags" :key="tag" variant="secondary" class="px-1.5 py-0 text-[10px] font-medium bg-rose-50 text-rose-600 border border-rose-100">{{ tag }}</Badge>
-        <span v-if="wantsCount !== null">{{ t('results.card.wants', { count: wantsCount }) }}</span>
-        <span v-if="viewCount !== null">{{ t('results.card.views', { count: viewCount }) }}</span>
-        <span v-if="favoriteCount !== null">{{ t('results.card.favorites', { count: favoriteCount }) }}</span>
-        <span v-if="region">{{ region }}</span>
-        <span v-if="publishTime">{{ t('results.card.published', { time: publishTime }) }}</span>
-      </div>
-      <div v-if="sellerFacts.length" class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
-        <User class="w-3 h-3 text-slate-400" />
-        <span v-for="fact in sellerFacts" :key="fact">{{ fact }}</span>
+        <span v-for="fact in facts" :key="fact.key">{{ fact.text }}</span>
       </div>
     </CardHeader>
 
-    <CardContent class="p-4 pt-2 flex-grow">
+    <CardContent class="px-4 pt-1.5 pb-3 flex-grow">
       <!-- AI Insight Section -->
-      <div class="rounded-xl p-3 border border-slate-100" :class="recommendationStatus.bg">
-        <div class="flex items-center justify-between mb-2">
+      <div class="rounded-xl p-2.5 border border-slate-100" :class="recommendationStatus.bg">
+        <div class="flex items-center justify-between" :class="criteriaChips.length || showReason ? 'mb-1.5' : ''">
           <div class="flex items-center gap-2">
             <component :is="recommendationStatus.icon" class="w-4 h-4" :class="recommendationStatus.text" />
             <span class="text-sm font-bold" :class="recommendationStatus.text">{{ recommendationStatus.label }}</span>
@@ -299,11 +337,11 @@ const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
           </div>
         </div>
 
-        <!-- 逐项核对：有 criteria_analysis 就用标签代替百分比，一眼看到哪条不符 -->
-        <div v-if="criteriaChips.length" class="mb-2.5">
+        <!-- 逐项核对：有 criteria_analysis 就用标签代替百分比，一眼看到哪条不符；紧凑模式下通过项折起来 -->
+        <div v-if="criteriaChips.length" :class="showReason ? 'mb-2' : ''">
           <div class="flex flex-wrap gap-1">
             <button
-              v-for="chip in criteriaChips"
+              v-for="chip in visibleChips"
               :key="chip.key"
               type="button"
               class="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-tight transition-colors"
@@ -316,6 +354,26 @@ const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
               <span>{{ chip.label }}</span>
               <span v-if="chip.short" class="font-bold">{{ chip.short }}</span>
             </button>
+            <button
+              v-if="hiddenPassCount > 0"
+              type="button"
+              class="inline-flex items-center gap-1 rounded-full border border-dashed border-emerald-300 bg-emerald-50/50 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-emerald-700 transition-colors hover:bg-emerald-50"
+              :aria-expanded="false"
+              @click="passExpanded = true"
+            >
+              <CheckCircle2 class="w-3 h-3 shrink-0" />
+              {{ visibleChips.length ? t('results.card.passSummary', { count: hiddenPassCount }) : t('results.card.allPass', { count: hiddenPassCount }) }}
+            </button>
+            <button
+              v-else-if="passExpanded && !detailsOpen && passCount > 0"
+              type="button"
+              class="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-tight text-slate-400 transition-colors hover:text-slate-600"
+              :aria-expanded="true"
+              @click="passExpanded = false"
+            >
+              {{ t('results.card.collapsePass') }}
+              <ChevronDown class="w-3 h-3 rotate-180" />
+            </button>
           </div>
           <div v-if="activeChip" class="mt-1.5 rounded-lg bg-white/70 px-2 py-1.5 text-[11px] leading-relaxed text-slate-600">
             <span class="font-bold">{{ activeChip.label }} · {{ t(`results.criteria.state.${activeChip.state}`) }}</span>
@@ -323,44 +381,44 @@ const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
             <p v-if="activeChip.evidence" class="mt-0.5 text-[10px] text-slate-400">{{ t('results.criteria.evidence', { evidence: activeChip.evidence }) }}</p>
           </div>
         </div>
-        <div v-else-if="!isSkipped" class="w-full h-1.5 bg-white/50 rounded-full overflow-hidden mb-3">
-          <div 
-            class="h-full transition-all duration-1000 ease-out rounded-full" 
+        <div v-else-if="!isSkipped" class="w-full h-1.5 bg-white/50 rounded-full overflow-hidden mb-2">
+          <div
+            class="h-full transition-all duration-1000 ease-out rounded-full"
             :class="recommendationStatus.color"
             :style="{ width: `${matchScore}%` }"
           ></div>
         </div>
 
-        <p class="text-xs leading-relaxed text-slate-600" :class="{ 'line-clamp-2': !expanded }">
-           {{ ai?.reason || t('results.card.analyzing') }}
-        </p>
-        
-        <button
-          type="button"
-          v-if="ai?.reason && ai.reason.length > 50"
-          @click="expanded = !expanded" 
-          class="mt-1 text-[10px] font-bold uppercase text-primary/70 hover:text-primary transition-colors flex items-center gap-1"
-        >
-          {{ expanded ? t('results.card.collapse') : t('results.card.expand') }}
-          <Info class="w-3 h-3" />
-        </button>
+        <template v-if="showReason">
+          <p class="text-xs leading-relaxed text-slate-600" :class="{ 'line-clamp-2': !expanded }">
+             {{ ai?.reason || t('results.card.analyzing') }}
+          </p>
+          <button
+            type="button"
+            v-if="ai?.reason && ai.reason.length > 50"
+            @click="expanded = !expanded"
+            class="mt-1 text-[10px] font-bold uppercase text-primary/70 hover:text-primary transition-colors flex items-center gap-1"
+          >
+            {{ expanded ? t('results.card.collapse') : t('results.card.expand') }}
+            <Info class="w-3 h-3" />
+          </button>
+        </template>
       </div>
 
       <!-- Seller Profile -->
-      <div v-if="profile" class="mt-3 rounded-xl border border-slate-100 bg-slate-50/60 p-3">
+      <div v-if="profile" class="mt-2 rounded-xl border border-slate-100 bg-slate-50/60 p-2.5">
         <button
           type="button"
-          @click="profileExpanded = !profileExpanded"
+          @click="profileOverride = !profileOpen"
           class="flex w-full items-center justify-between text-left"
-          :aria-expanded="profileExpanded"
+          :aria-expanded="profileOpen"
         >
           <span class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
             <User class="w-3 h-3" /> {{ t('results.card.sellerProfile') }}
             <span v-if="profile.摘要" class="normal-case tracking-normal font-medium text-slate-500">· {{ profile.摘要 }}</span>
           </span>
-          <ChevronDown class="w-3 h-3 shrink-0 text-slate-400 transition-transform" :class="{ 'rotate-180': profileExpanded }" />
+          <ChevronDown class="w-3 h-3 shrink-0 text-slate-400 transition-transform" :class="{ 'rotate-180': profileOpen }" />
         </button>
-        <p v-if="profile.结论" class="mt-1.5 text-xs leading-relaxed text-slate-600">{{ profile.结论 }}</p>
         <div v-if="profileSignals.length" class="mt-1.5 flex flex-wrap gap-1">
           <span
             v-for="signal in profileSignals"
@@ -369,7 +427,8 @@ const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
             :class="isWarningSignal(signal) ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'"
           >{{ signal }}</span>
         </div>
-        <dl v-if="profileExpanded && profileRows.length" class="mt-2 space-y-1 text-[11px] text-slate-500">
+        <p v-if="profileOpen && profile.结论" class="mt-1.5 text-xs leading-relaxed text-slate-600">{{ profile.结论 }}</p>
+        <dl v-if="profileOpen && profileRows.length" class="mt-2 space-y-1 text-[11px] text-slate-500">
           <div v-for="row in profileRows" :key="row.key" class="flex gap-2">
             <dt class="w-8 shrink-0 font-medium text-slate-400">{{ row.label }}</dt>
             <dd class="leading-relaxed">{{ row.value }}</dd>
@@ -377,59 +436,87 @@ const soldReference = computed(() => priceInsight.value?.sold_reference ?? null)
         </dl>
       </div>
 
-      <!-- Price Stats -->
-      <div v-if="priceInsight?.observation_count" class="mt-4 space-y-2">
-        <div v-if="priceVerdict" class="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-xl border px-3 py-1.5 text-[11px]" :class="priceVerdict.style">
-          <span class="font-bold">{{ priceVerdict.label }}</span>
-          <span>{{ priceVerdict.detail }}</span>
+      <!-- Price Stats：紧凑模式一行，详情模式贵贱行 + 三个格子 -->
+      <div v-if="priceInsight?.observation_count" class="mt-2">
+        <div
+          v-if="!detailsOpen"
+          class="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-xl border px-2.5 py-1.5 text-[11px]"
+          :class="priceVerdict ? priceVerdict.style : 'border-dashed border-slate-200 text-slate-500'"
+        >
+          <template v-if="priceVerdict">
+            <span class="font-bold">{{ priceVerdict.label }}</span>
+            <span>{{ priceVerdict.detail }}</span>
+          </template>
+          <span v-else class="text-slate-400">{{ t('results.card.verdict.insufficient') }}</span>
+          <template v-for="entry in priceLine" :key="entry.key">
+            <span class="text-slate-300" aria-hidden="true">·</span>
+            <span><span class="text-slate-400">{{ entry.label }}</span> <span class="font-semibold">{{ entry.value }}</span></span>
+          </template>
         </div>
-        <div v-else class="rounded-xl border border-dashed border-slate-200 px-3 py-1.5 text-[11px] text-slate-400">
-          {{ t('results.card.verdict.insufficient') }}
-        </div>
-        <div class="grid grid-cols-3 gap-2">
-          <div class="bg-slate-50/50 p-2 rounded-xl border border-slate-100/50">
-            <div class="flex items-center gap-1 text-[10px] font-medium text-slate-400 mb-1">
-              <TrendingUp class="w-3 h-3" /> {{ t('results.card.listingMedian') }}
-            </div>
-            <div class="text-sm font-bold text-slate-700">{{ fmtPrice(priceInsight.market_median_price) }}</div>
-            <div class="text-[10px] text-slate-400">{{ t('results.card.samples', { count: priceInsight.market_sample_count ?? 0 }) }}</div>
+        <div v-else class="space-y-2">
+          <div v-if="priceVerdict" class="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-xl border px-3 py-1.5 text-[11px]" :class="priceVerdict.style">
+            <span class="font-bold">{{ priceVerdict.label }}</span>
+            <span>{{ priceVerdict.detail }}</span>
           </div>
-          <div class="bg-slate-50/50 p-2 rounded-xl border border-slate-100/50">
-            <div class="flex items-center gap-1 text-[10px] font-medium text-slate-400 mb-1">
-              <Tag class="w-3 h-3" /> {{ t('results.card.soldReference') }}
-            </div>
-            <div class="text-sm font-bold" :class="soldReference?.reliable ? 'text-slate-700' : 'text-slate-400'">{{ fmtPrice(soldReference?.median_price) }}</div>
-            <div class="text-[10px] text-slate-400">
-              {{ soldReference?.sample_count ? t('results.card.samples', { count: soldReference.sample_count }) : t('results.card.noSamples') }}
-            </div>
+          <div v-else class="rounded-xl border border-dashed border-slate-200 px-3 py-1.5 text-[11px] text-slate-400">
+            {{ t('results.card.verdict.insufficient') }}
           </div>
-          <div class="bg-slate-50/50 p-2 rounded-xl border border-slate-100/50">
-            <div class="flex items-center gap-1 text-[10px] font-medium text-slate-400 mb-1">
-              <TrendingDown class="w-3 h-3" /> {{ t('results.card.historicalLow') }}
+          <div class="grid grid-cols-3 gap-2">
+            <div class="bg-slate-50/50 p-2 rounded-xl border border-slate-100/50">
+              <div class="flex items-center gap-1 text-[10px] font-medium text-slate-400 mb-1">
+                <TrendingUp class="w-3 h-3" /> {{ t('results.card.listingMedian') }}
+              </div>
+              <div class="text-sm font-bold text-slate-700">{{ fmtPrice(priceInsight.market_median_price) }}</div>
+              <div class="text-[10px] text-slate-400">{{ t('results.card.samples', { count: priceInsight.market_sample_count ?? 0 }) }}</div>
             </div>
-            <div class="text-sm font-bold text-slate-700">{{ fmtPrice(priceInsight.min_price) }}</div>
-            <div class="text-[10px] text-slate-400">{{ t('results.card.observations', { count: priceInsight.observation_count }) }}</div>
+            <div class="bg-slate-50/50 p-2 rounded-xl border border-slate-100/50">
+              <div class="flex items-center gap-1 text-[10px] font-medium text-slate-400 mb-1">
+                <Tag class="w-3 h-3" /> {{ t('results.card.soldReference') }}
+              </div>
+              <div class="text-sm font-bold" :class="soldReference?.reliable ? 'text-slate-700' : 'text-slate-400'">{{ fmtPrice(soldReference?.median_price) }}</div>
+              <div class="text-[10px] text-slate-400">
+                {{ soldReference?.sample_count ? t('results.card.samples', { count: soldReference.sample_count }) : t('results.card.noSamples') }}
+              </div>
+            </div>
+            <div class="bg-slate-50/50 p-2 rounded-xl border border-slate-100/50">
+              <div class="flex items-center gap-1 text-[10px] font-medium text-slate-400 mb-1">
+                <TrendingDown class="w-3 h-3" /> {{ t('results.card.historicalLow') }}
+              </div>
+              <div class="text-sm font-bold text-slate-700">{{ fmtPrice(priceInsight.min_price) }}</div>
+              <div class="text-[10px] text-slate-400">{{ t('results.card.observations', { count: priceInsight.observation_count }) }}</div>
+            </div>
           </div>
         </div>
       </div>
 
-      <!-- 收件箱操作 -->
-      <div class="mt-3 flex flex-wrap gap-1.5">
+      <!-- 收件箱操作 + 详情开关 -->
+      <div class="mt-2.5 flex items-center justify-between gap-1.5">
+        <div class="flex flex-wrap gap-1">
+          <button
+            v-for="action in reviewActions"
+            :key="action.status"
+            type="button"
+            class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            :class="action.cls"
+            @click="emit('review', props.item, action.status)"
+          >
+            <component :is="action.icon" class="w-3 h-3" />
+            {{ action.label }}
+          </button>
+        </div>
         <button
-          v-for="action in reviewActions"
-          :key="action.status"
           type="button"
-          class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          :class="action.cls"
-          @click="emit('review', props.item, action.status)"
+          class="inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :aria-expanded="detailsOpen"
+          @click="toggleDetails"
         >
-          <component :is="action.icon" class="w-3 h-3" />
-          {{ action.label }}
+          {{ detailsOpen ? t('results.card.hideDetails') : t('results.card.showDetails') }}
+          <ChevronDown class="w-3 h-3 transition-transform" :class="{ 'rotate-180': detailsOpen }" />
         </button>
       </div>
     </CardContent>
 
-    <CardFooter class="px-4 py-3 bg-slate-50/30 border-t border-slate-100/60 flex items-center justify-between text-[10px]">
+    <CardFooter class="px-4 py-2 bg-slate-50/30 border-t border-slate-100/60 flex items-center justify-between text-[10px]">
       <div class="flex items-center gap-3 text-slate-400">
         <div class="flex items-center gap-1">
           <User class="w-3 h-3" />

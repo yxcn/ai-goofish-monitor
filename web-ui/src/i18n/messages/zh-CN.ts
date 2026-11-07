@@ -344,6 +344,12 @@ const zhCN = {
       aiMatch: 'AI 匹配度',
       crawledAt: '抓取 {time}',
       analysisSkipped: '已跳过分析',
+      passSummary: '其余 {count} 项通过',
+      allPass: '{count} 项全部通过',
+      collapsePass: '收起通过项',
+      showDetails: '展开',
+      hideDetails: '收起',
+      detailMode: '详细模式',
     },
   },
   logs: {

@@ -344,6 +344,12 @@ const enUS = {
       aiMatch: 'AI Match',
       crawledAt: 'Crawled {time}',
       analysisSkipped: 'Analysis skipped',
+      passSummary: '{count} more passed',
+      allPass: 'All {count} passed',
+      collapsePass: 'Hide passed',
+      showDetails: 'More',
+      hideDetails: 'Less',
+      detailMode: 'Detailed view',
     },
   },
   logs: {

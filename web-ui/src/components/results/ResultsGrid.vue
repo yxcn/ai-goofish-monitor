@@ -10,6 +10,8 @@ interface Props {
   emptyText?: string
   /** 骨架屏个数（折叠区少放几个） */
   skeletonCount?: number
+  /** 页面级「详细模式」，透传给每张卡 */
+  details?: boolean
 }
 
 const props = defineProps<Props>()
@@ -34,7 +36,7 @@ const skeletonItems = Array.from({ length: props.skeletonCount ?? 8 }, (_, index
         :key="item"
         class="app-surface overflow-hidden"
       >
-        <div class="aspect-[4/3] animate-pulse bg-slate-200/70"></div>
+        <div class="aspect-[16/10] animate-pulse bg-slate-200/70"></div>
         <div class="space-y-3 p-4">
           <div class="h-5 w-4/5 animate-pulse rounded bg-slate-200/70"></div>
           <div class="h-7 w-1/3 animate-pulse rounded bg-slate-200/70"></div>
@@ -50,11 +52,13 @@ const skeletonItems = Array.from({ length: props.skeletonCount ?? 8 }, (_, index
     <div v-else-if="results.length === 0" class="app-surface text-center py-12 text-gray-500">
       {{ emptyText || t('results.grid.empty') }}
     </div>
-    <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+    <!-- items-start：单张卡展开详情时不把同一排其他卡撑高 -->
+    <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 items-start">
       <ResultCard
         v-for="item in results"
         :key="item.商品信息.商品ID"
         :item="item"
+        :details="details"
         @toggle-block="emit('toggle-block', $event)"
         @review="(item, status) => emit('review', item, status)"
       />

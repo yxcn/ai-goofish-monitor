@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Inbox, MessageCircle, Ban, ShoppingBag, Layers, ChevronDown } from 'lucide-vue-next'
 import { useResults, NOT_RECOMMENDED_LIMIT, type ResultsTab } from '@/composables/useResults'
@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from '@/components/ui/toast'
 import {
@@ -61,6 +62,22 @@ const isDeleteDialogOpen = ref(false)
 const isBlacklistDialogOpen = ref(false)
 const blacklistDraft = ref('')
 const gridContainer = ref<HTMLElement | null>(null)
+
+// 卡片紧凑 / 详细：默认紧凑，一屏能看完一排；记在本地
+const STORAGE_KEY_DETAILS = 'resultsCardDetails'
+function loadPersistedDetails(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEY_DETAILS) === '1'
+  } catch {
+    return false
+  }
+}
+const showDetails = ref(loadPersistedDetails())
+watch(showDetails, (value) => {
+  try {
+    localStorage.setItem(STORAGE_KEY_DETAILS, value ? '1' : '0')
+  } catch { /* ignore */ }
+})
 
 // 买到了：确认框里可以顺手把任务停掉
 const isBoughtDialogOpen = ref(false)
@@ -265,8 +282,9 @@ async function handleSaveBlacklistRules() {
       @delete="openDeleteDialog"
     />
 
-    <!-- 收件箱 / 已联系 / 已排除 / 已买到 / 全部 -->
-    <Tabs :model-value="tab" class="mb-4" @update:model-value="handleTabChange">
+    <!-- 收件箱 / 已联系 / 已排除 / 已买到 / 全部，右边是卡片紧凑/详细开关 -->
+    <div class="mb-4 flex items-center gap-3">
+      <Tabs :model-value="tab" class="min-w-0 flex-1" @update:model-value="handleTabChange">
       <TabsList class="flex w-full flex-nowrap justify-start gap-1 overflow-x-auto rounded-xl bg-slate-100 p-1">
         <TabsTrigger
           v-for="def in tabDefs"
@@ -283,7 +301,12 @@ async function handleSaveBlacklistRules() {
           >{{ def.count }}</span>
         </TabsTrigger>
       </TabsList>
-    </Tabs>
+      </Tabs>
+      <label class="flex shrink-0 cursor-pointer items-center gap-2 text-xs text-slate-500">
+        <Switch id="results-card-details" v-model="showDetails" class="h-5 w-9 [&>span]:h-4 [&>span]:w-4 [&>span[data-state=checked]]:translate-x-4" />
+        <span>{{ t('results.card.detailMode') }}</span>
+      </label>
+    </div>
     <p v-if="tab === 'inbox'" class="-mt-2 mb-4 text-xs text-slate-400">{{ t('results.inbox.hint') }}</p>
 
     <div ref="gridContainer" class="scroll-mt-6">
@@ -291,6 +314,7 @@ async function handleSaveBlacklistRules() {
         :results="results"
         :is-loading="isLoading"
         :empty-text="emptyText"
+        :details="showDetails"
         @toggle-block="toggleItemBlock"
         @review="handleReview"
       />
@@ -344,6 +368,7 @@ async function handleSaveBlacklistRules() {
           :is-loading="isSecondaryLoading"
           :empty-text="t('results.inbox.notRecommendedEmpty')"
           :skeleton-count="4"
+          :details="showDetails"
           @toggle-block="toggleItemBlock"
           @review="handleReview"
         />
