@@ -56,6 +56,11 @@ const imageUrl = computed(() => info.value.商品图片列表?.[0] || info.value
 const crawlTime = computed(() => (props.item.爬取时间
   ? formatDateTime(props.item.爬取时间, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
   : t('common.unknown')))
+// 任务的第几轮抓到的；老记录没有就不显示
+const runNo = computed(() => {
+  const value = props.item.轮次
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+})
 const matchScore = computed(() => ai.value?.value_score ?? 0)
 // 商品页上的那几项：标签（包邮/验货宝）、想要、浏览、收藏、发货地、发布时间；占位符（NaN、-）不显示
 const listingTags = computed(() => Array.from(new Set((info.value.商品标签 ?? []).map((tag) => String(tag ?? '').trim()).filter(Boolean))))
@@ -580,6 +585,7 @@ const priceLine = computed(() => {
           <div class="flex shrink-0 items-center gap-1">
             <Clock class="w-3 h-3" />
             <span>{{ t('results.card.crawledAt', { time: crawlTime }) }}</span>
+            <span v-if="runNo" data-testid="run-no">· {{ t('results.card.round', { no: runNo }) }}</span>
           </div>
         </div>
         <div class="flex shrink-0 items-center gap-2.5">

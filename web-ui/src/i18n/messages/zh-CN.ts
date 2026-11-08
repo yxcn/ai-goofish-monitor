@@ -344,6 +344,7 @@ const zhCN = {
       unblock: '取消屏蔽',
       aiMatch: 'AI 匹配度',
       crawledAt: '抓取 {time}',
+      round: '第 {no} 轮',
       tokens: '{count} tok',
       usageInput: '输入 {count}',
       usageCacheRead: '缓存命中 {count}',

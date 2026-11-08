@@ -153,3 +153,26 @@ def test_alert_text_has_title_detail_and_action():
     text = format_alert_text({"title": "疑似接口变更", "message": "12 条解析失败", "action": "检查 parsers"})
     assert text == "【疑似接口变更】12 条解析失败\n建议：检查 parsers"
     assert format_alert_text({"category": CATEGORY_OK, "message": "一切正常", "action": ""}) == "【正常】一切正常"
+
+
+def test_begin_task_run_numbers_each_task_separately_and_continues_from_old_run_ids(tmp_path, monkeypatch):
+    """轮次编号：每个任务各自连续；第一次发号从该任务已有的 crawl_runs id 接着数；结束时写进运行摘要。"""
+    from src.services.crawl_health_service import begin_task_run
+
+    monkeypatch.chdir(tmp_path)
+    now = datetime(2026, 11, 8, 23, 0, 0)
+    # 升级前已经跑过的几轮：只有 id，没有 run_no
+    for _ in range(3):
+        record_crawl_run(RunStats(task_name="T14", keyword="k"), status="success", now=now)
+    assert load_recent_runs("T14")[0]["run_no"] is None
+
+    assert begin_task_run("T14") == 4
+    assert begin_task_run("T14") == 5
+    assert begin_task_run("另一个任务") == 1
+    assert begin_task_run("另一个任务") == 2
+
+    stats = RunStats(task_name="T14", keyword="k", run_no=begin_task_run("T14"))
+    assert stats.run_no == 6
+    summary = record_crawl_run(stats, status="success", now=now)
+    assert summary["run_no"] == 6
+    assert load_recent_runs("T14")[0]["run_no"] == 6

@@ -344,6 +344,7 @@ const enUS = {
       unblock: 'Unblock',
       aiMatch: 'AI Match',
       crawledAt: 'Crawled {time}',
+      round: 'run #{no}',
       tokens: '{count} tok',
       usageInput: 'input {count}',
       usageCacheRead: 'cache hit {count}',

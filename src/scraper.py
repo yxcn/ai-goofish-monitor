@@ -67,6 +67,7 @@ from src.services.result_storage_service import load_processed_link_keys, mark_n
 from src.services.crawl_health_service import (
     LEVEL_OK,
     RunStats,
+    begin_task_run,
     classify_error,
     format_alert_text,
     mark_run_notified,
@@ -816,6 +817,12 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     search_keywords = [keyword] + extra_keywords
     # 运行摘要：各处只 add 计数，结束时统一分类并写库，界面和推送据此判断"爬虫是否需要人介入"
     run_stats = RunStats(task_name=str(task_config.get("task_name", "未命名任务")), keyword=str(keyword))
+    # 轮次编号：开跑就发号，写进每条商品记录（结果页显示「第 N 轮」）和结束时的运行摘要；发号失败不影响抓取
+    try:
+        run_stats.run_no = begin_task_run(run_stats.task_name)
+        print(f"LOG: 本次是任务「{run_stats.task_name}」的第 {run_stats.run_no} 轮。")
+    except Exception as exc:
+        print(f"警告: 轮次编号分配失败，本轮商品记录不带轮次号: {exc}")
     try:
         attribute_rules = normalize_attribute_rules(task_config.get("attribute_rules"))
     except ValueError as exc:
@@ -1454,6 +1461,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                     "任务名称": task_config.get(
                                         "task_name", "Untitled Task"
                                     ),
+                                    "轮次": run_stats.run_no,
                                     "商品信息": item_data,
                                     "卖家信息": {},
                                 }

@@ -212,7 +212,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
     _migrate_result_items_hidden_by_rule(conn)
     _migrate_result_items_review_status(conn)
     _migrate_tasks_json_list_columns(conn)
+    _migrate_crawl_runs_run_no(conn)
     conn.commit()
+
+
+def _migrate_crawl_runs_run_no(conn: sqlite3.Connection) -> None:
+    """crawl_runs 补 run_no 列：任务自己的轮次编号（第 N 轮），和商品记录里的「轮次」对得上。老行为 NULL。幂等。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(crawl_runs)").fetchall()}
+    if "run_no" not in cols:
+        conn.execute("ALTER TABLE crawl_runs ADD COLUMN run_no INTEGER")
 
 
 def _migrate_result_items_hidden_by_rule(conn: sqlite3.Connection) -> None:

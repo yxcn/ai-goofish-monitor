@@ -95,6 +95,8 @@ class RunStats:
     keyword: str
     started_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
     counters: dict = field(default_factory=lambda: {name: 0 for name in COUNTER_NAMES})
+    # 本任务的轮次编号（begin_task_run 发的，第 N 轮）；拿不到时为 None，不影响其它统计
+    run_no: Optional[int] = None
 
     def add(self, name: str, amount: int = 1) -> None:
         if amount:
@@ -210,6 +212,42 @@ def _now_text(now: Optional[datetime] = None) -> str:
     return (now or datetime.now()).strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def _run_counter_key(task_name: str) -> str:
+    return f"run_no:{task_name}"
+
+
+@retry_on_lock
+def begin_task_run(task_name: str) -> int:
+    """开跑时给本任务发一个轮次编号（第 N 轮），每个任务各自从 1 连续往上数。
+
+    计数器放在 app_metadata 里，和 crawl_runs 的保留条数无关（那张表只留最近 200 轮）。
+    第一次发号时从该任务已有 crawl_runs 行的最大 id 接着数，这样编号和之前健康面板里看到的轮次 id 不会倒退。
+    同一事务里读、加、写，两个任务同时开跑也不会发重。
+    """
+    bootstrap_sqlite_storage()
+    key = _run_counter_key(task_name)
+    with sqlite_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT value FROM app_metadata WHERE key = ?", (key,)).fetchone()
+        if row is not None:
+            try:
+                current = int(row["value"])
+            except (TypeError, ValueError):
+                current = 0
+        else:
+            seed = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM crawl_runs WHERE task_name = ?", (task_name,)
+            ).fetchone()[0]
+            current = int(seed or 0)
+        run_no = current + 1
+        conn.execute(
+            "INSERT OR REPLACE INTO app_metadata(key, value) VALUES (?, ?)",
+            (key, str(run_no)),
+        )
+        conn.commit()
+    return run_no
+
+
 @retry_on_lock
 def record_crawl_run(
     stats: RunStats,
@@ -228,8 +266,8 @@ def record_crawl_run(
             """
             INSERT INTO crawl_runs (
                 task_name, keyword, started_at, finished_at, status, error_reason,
-                level, category, message, counters_json, notified
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                level, category, message, counters_json, notified, run_no
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             """,
             (
                 stats.task_name,
@@ -242,6 +280,7 @@ def record_crawl_run(
                 assessment["category"],
                 assessment["message"],
                 json.dumps(stats.counters, ensure_ascii=False),
+                stats.run_no,
             ),
         )
         run_id = int(cursor.lastrowid)
@@ -255,7 +294,7 @@ def record_crawl_run(
             (stats.task_name, stats.task_name, RUNS_RETENTION_PER_TASK),
         )
         conn.commit()
-    return {**assessment, "run_id": run_id, "finished_at": finished_at, "status": status}
+    return {**assessment, "run_id": run_id, "run_no": stats.run_no, "finished_at": finished_at, "status": status}
 
 
 def load_recent_runs(task_name: str, *, limit: int = HISTORY_RUNS) -> list[dict]:
@@ -274,8 +313,11 @@ def _row_to_run(row) -> dict:
         counters = json.loads(row["counters_json"] or "{}")
     except (TypeError, ValueError):
         counters = {}
+    keys = row.keys()
+    run_no = row["run_no"] if "run_no" in keys else None
     return {
         "id": int(row["id"]),
+        "run_no": int(run_no) if run_no is not None else None,
         "task_name": row["task_name"],
         "keyword": row["keyword"],
         "started_at": row["started_at"],
