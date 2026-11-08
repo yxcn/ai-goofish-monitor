@@ -57,6 +57,14 @@ const activeKeySet = computed(() => {
 function selectProvider(value: AiProvider) {
   aiSettings.value.AI_PROVIDER = value
 }
+// 已保存的 Claude 模型在内置价目表里的单价：留空时就按它算，输入框只拿它做占位提示
+const claudeBuiltinPrices = computed(() => aiSettings.value.CLAUDE_BUILTIN_PRICES ?? null)
+function builtinPricePlaceholder(kind: 'input' | 'output' | 'cache_read'): string {
+  const prices = claudeBuiltinPrices.value
+  if (!prices) return t('settings.ai.priceUnset')
+  const price = prices[kind]
+  return t('settings.ai.priceBuiltin', { price: Number.isInteger(price) ? String(price) : String(Number(price.toFixed(4))) })
+}
 const route = useRoute()
 const validTabs = new Set(['notifications', 'ai', 'rotation', 'status', 'prompts'])
 
@@ -270,6 +278,26 @@ watch(selectedPrompt, async (value) => {
                 <Input v-model="aiSettings.CLAUDE_MODEL_NAME" placeholder="claude-sonnet-5-5" />
                 <p class="text-xs text-gray-500">{{ t('settings.ai.claudeModelHint') }}</p>
               </div>
+              <div class="grid gap-2">
+                <Label>{{ t('settings.ai.prices') }}</Label>
+                <div class="grid grid-cols-3 gap-2">
+                  <div class="grid gap-1">
+                    <span class="text-xs text-gray-500">{{ t('settings.ai.priceInput') }}</span>
+                    <Input v-model="aiSettings.CLAUDE_PRICE_INPUT_USD_PER_M" inputmode="decimal" :placeholder="builtinPricePlaceholder('input')" />
+                  </div>
+                  <div class="grid gap-1">
+                    <span class="text-xs text-gray-500">{{ t('settings.ai.priceOutput') }}</span>
+                    <Input v-model="aiSettings.CLAUDE_PRICE_OUTPUT_USD_PER_M" inputmode="decimal" :placeholder="builtinPricePlaceholder('output')" />
+                  </div>
+                  <div class="grid gap-1">
+                    <span class="text-xs text-gray-500">{{ t('settings.ai.priceCacheRead') }}</span>
+                    <Input v-model="aiSettings.CLAUDE_PRICE_CACHE_READ_USD_PER_M" inputmode="decimal" :placeholder="builtinPricePlaceholder('cache_read')" />
+                  </div>
+                </div>
+                <p class="text-xs text-gray-500">
+                  {{ claudeBuiltinPrices ? t('settings.ai.claudePricesHint') : t('settings.ai.claudePricesHintUnknown') }}
+                </p>
+              </div>
             </template>
             <template v-else>
               <div class="grid gap-2">
@@ -290,6 +318,24 @@ watch(selectedPrompt, async (value) => {
               <div class="grid gap-2">
                 <Label>{{ t('settings.ai.modelName') }}</Label>
                 <Input v-model="aiSettings.OPENAI_MODEL_NAME" placeholder="gpt-3.5-turbo" />
+              </div>
+              <div class="grid gap-2">
+                <Label>{{ t('settings.ai.prices') }}</Label>
+                <div class="grid grid-cols-3 gap-2">
+                  <div class="grid gap-1">
+                    <span class="text-xs text-gray-500">{{ t('settings.ai.priceInput') }}</span>
+                    <Input v-model="aiSettings.OPENAI_PRICE_INPUT_USD_PER_M" inputmode="decimal" :placeholder="t('settings.ai.priceUnset')" />
+                  </div>
+                  <div class="grid gap-1">
+                    <span class="text-xs text-gray-500">{{ t('settings.ai.priceOutput') }}</span>
+                    <Input v-model="aiSettings.OPENAI_PRICE_OUTPUT_USD_PER_M" inputmode="decimal" :placeholder="t('settings.ai.priceUnset')" />
+                  </div>
+                  <div class="grid gap-1">
+                    <span class="text-xs text-gray-500">{{ t('settings.ai.priceCacheRead') }}</span>
+                    <Input v-model="aiSettings.OPENAI_PRICE_CACHE_READ_USD_PER_M" inputmode="decimal" :placeholder="t('settings.ai.priceCacheReadPlaceholder')" />
+                  </div>
+                </div>
+                <p class="text-xs text-gray-500">{{ t('settings.ai.openaiPricesHint') }}</p>
               </div>
             </template>
             <div class="grid gap-2">

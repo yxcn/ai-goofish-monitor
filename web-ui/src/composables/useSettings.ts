@@ -92,6 +92,7 @@ export function useSettings() {
   // Key 留空 = 不修改：不放进请求体，免得把已保存的 Key 清掉
   function buildAiPayload(): AiSettings {
     const payload = { ...aiSettings.value }
+    delete payload.CLAUDE_BUILTIN_PRICES // 只读字段，不回传
     for (const field of ['OPENAI_API_KEY', 'CLAUDE_API_KEY'] as const) {
       const apiKey = (payload[field] || '').trim()
       if (apiKey) {

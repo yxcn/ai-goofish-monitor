@@ -46,8 +46,17 @@ def _text_block(text):
     return SimpleNamespace(type="text", text=text)
 
 
-def _response(*blocks, stop_reason="end_turn", model="claude-opus-5-5"):
-    return SimpleNamespace(content=list(blocks), stop_reason=stop_reason, model=model, stop_details=None)
+def _response(*blocks, stop_reason="end_turn", model="claude-opus-5-5", usage=None):
+    return SimpleNamespace(content=list(blocks), stop_reason=stop_reason, model=model, stop_details=None, usage=usage)
+
+
+def _usage(input_tokens=1000, output_tokens=400, cache_read=2000, cache_write=500):
+    return SimpleNamespace(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=cache_write,
+    )
 
 
 class _StatusError(Exception):
@@ -269,8 +278,12 @@ def _claude_selected(monkeypatch, tmp_path):
 def test_get_ai_analysis_uses_claude_when_selected(monkeypatch, tmp_path, _claude_selected):
     image = tmp_path / "item.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
-    fake = _FakeClaude([_response(_text_block("```json\n" + VALID_JSON + "\n```"), model="claude-opus-5-5")])
+    fake = _FakeClaude(
+        [_response(_text_block("```json\n" + VALID_JSON + "\n```"), model="claude-opus-5-5", usage=_usage())]
+    )
     monkeypatch.setattr(ai_handler, "claude_client", fake)
+    for key in ("CLAUDE_PRICE_INPUT_USD_PER_M", "CLAUDE_PRICE_OUTPUT_USD_PER_M", "CLAUDE_PRICE_CACHE_READ_USD_PER_M"):
+        monkeypatch.setattr(ai_handler, key, None)
 
     result = asyncio.run(
         ai_handler.get_ai_analysis(
@@ -283,6 +296,13 @@ def test_get_ai_analysis_uses_claude_when_selected(monkeypatch, tmp_path, _claud
     assert result["is_recommended"] is True
     assert result["ai_provider"] == "claude"
     assert result["ai_model"] == "claude-opus-5-5"
+    # 没手填单价：按内置的 Opus 5.5 官方价（4 / 20，缓存读 0.2，缓存写 5）算
+    usage = result["ai_usage"]
+    assert usage["calls"] == 1
+    assert (usage["input_tokens"], usage["cache_read_tokens"], usage["cache_write_tokens"], usage["output_tokens"]) == (1000, 2000, 500, 400)
+    assert usage["total_tokens"] == 3900
+    assert usage["cost_usd"] == pytest.approx(0.0149)
+    assert usage["elapsed_ms"] >= 0
     _kind, request = fake.calls[0]
     assert request["system"][0]["text"] == "分析标准：只要 T14"
     assert request["system"][0]["cache_control"] == {"type": "ephemeral"}
@@ -576,3 +596,18 @@ def test_claude_test_uses_stored_key_for_official_endpoint(tmp_path, monkeypatch
     assert captured["client"]["api_key"] == "sk-stored"
     assert captured["request"]["model"] == DEFAULT_CLAUDE_MODEL
     assert captured["closed"] is True
+
+
+def test_call_claude_with_retries_reports_every_response_including_truncated_ones():
+    """on_response 每个拿到的响应都回调：截断那次的 token 也是真花的。"""
+    fake = _FakeClaude(
+        [
+            _response(_text_block("{"), stop_reason="max_tokens", usage=_usage(output_tokens=4000)),
+            _response(_text_block(VALID_JSON), usage=_usage(output_tokens=300)),
+        ]
+    )
+    seen = []
+    result, model = _run_call(fake, on_response=seen.append)
+    assert model == "claude-opus-5-5"
+    assert VALID_JSON in result
+    assert [response.usage.output_tokens for response in seen] == [4000, 300]

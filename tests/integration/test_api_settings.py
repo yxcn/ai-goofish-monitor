@@ -26,6 +26,12 @@ _SETTINGS_ENV_KEYS = [
     "CLAUDE_MODEL_NAME",
     "SKIP_AI_ANALYSIS",
     "PROXY_URL",
+    "OPENAI_PRICE_INPUT_USD_PER_M",
+    "OPENAI_PRICE_OUTPUT_USD_PER_M",
+    "OPENAI_PRICE_CACHE_READ_USD_PER_M",
+    "CLAUDE_PRICE_INPUT_USD_PER_M",
+    "CLAUDE_PRICE_OUTPUT_USD_PER_M",
+    "CLAUDE_PRICE_CACHE_READ_USD_PER_M",
     "NTFY_TOPIC_URL",
     "GOTIFY_URL",
     "GOTIFY_TOKEN",
@@ -345,6 +351,14 @@ def test_ai_settings_fall_back_to_runtime_environment_when_env_file_missing(tmp_
         "CLAUDE_MODEL_NAME": "",
         "SKIP_AI_ANALYSIS": False,
         "PROXY_URL": "http://127.0.0.1:7890",
+        "OPENAI_PRICE_INPUT_USD_PER_M": "",
+        "OPENAI_PRICE_OUTPUT_USD_PER_M": "",
+        "OPENAI_PRICE_CACHE_READ_USD_PER_M": "",
+        "CLAUDE_PRICE_INPUT_USD_PER_M": "",
+        "CLAUDE_PRICE_OUTPUT_USD_PER_M": "",
+        "CLAUDE_PRICE_CACHE_READ_USD_PER_M": "",
+        # CLAUDE_MODEL_NAME 为空 = 默认 claude-sonnet-5-5，内置官方价
+        "CLAUDE_BUILTIN_PRICES": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
     }
 
     status_response = client.get("/api/settings/status")
@@ -444,3 +458,53 @@ def test_ai_test_endpoint_falls_back_to_responses_when_chat_completions_api_404(
     assert request_history[0][1]["messages"][0]["content"] == settings.AI_TEST_PROMPT
     assert request_history[1][0] == "responses"
     assert request_history[1][1]["input"][0]["content"][0]["text"] == settings.AI_TEST_PROMPT
+
+
+def test_update_ai_settings_validates_and_stores_prices(tmp_path, monkeypatch):
+    _clear_settings_env(monkeypatch)
+    env_file = tmp_path / ".env"
+    env_file.write_text("OPENAI_BASE_URL=https://example.com/v1\nOPENAI_MODEL_NAME=demo\n", encoding="utf-8")
+    monkeypatch.setattr(env_manager, "env_file", env_file)
+    monkeypatch.setattr(settings, "_reload_env", lambda: None)
+    client = _build_settings_client()
+
+    # 输入和输出要一起填
+    only_input = client.put("/api/settings/ai", json={"OPENAI_PRICE_INPUT_USD_PER_M": "2"})
+    assert only_input.status_code == 400
+    assert "一起" in only_input.json()["detail"]
+    # 负数 / 非数字拒绝
+    assert client.put(
+        "/api/settings/ai", json={"OPENAI_PRICE_INPUT_USD_PER_M": "-1", "OPENAI_PRICE_OUTPUT_USD_PER_M": "10"}
+    ).status_code == 400
+    assert client.put(
+        "/api/settings/ai", json={"OPENAI_PRICE_INPUT_USD_PER_M": "abc", "OPENAI_PRICE_OUTPUT_USD_PER_M": "10"}
+    ).status_code == 400
+    assert "PRICE" not in env_file.read_text(encoding="utf-8")
+
+    # 数字和字符串都收，存成规范写法；缓存命中可以留空
+    ok = client.put(
+        "/api/settings/ai",
+        json={
+            "OPENAI_PRICE_INPUT_USD_PER_M": 2,
+            "OPENAI_PRICE_OUTPUT_USD_PER_M": "10.50",
+            "OPENAI_PRICE_CACHE_READ_USD_PER_M": "",
+        },
+    )
+    assert ok.status_code == 200
+    data = client.get("/api/settings/ai").json()
+    assert data["OPENAI_PRICE_INPUT_USD_PER_M"] == "2"
+    assert data["OPENAI_PRICE_OUTPUT_USD_PER_M"] == "10.5"
+    assert data["OPENAI_PRICE_CACHE_READ_USD_PER_M"] == ""
+
+    # 之后只改输出价，和已存的输入价配对检查通过；清空输出价则和已存输入价配不上
+    assert client.put("/api/settings/ai", json={"OPENAI_PRICE_OUTPUT_USD_PER_M": "12"}).status_code == 200
+    assert client.put("/api/settings/ai", json={"OPENAI_PRICE_OUTPUT_USD_PER_M": ""}).status_code == 400
+    # 一起清空可以
+    assert client.put(
+        "/api/settings/ai", json={"OPENAI_PRICE_INPUT_USD_PER_M": "", "OPENAI_PRICE_OUTPUT_USD_PER_M": ""}
+    ).status_code == 200
+    assert client.get("/api/settings/ai").json()["OPENAI_PRICE_INPUT_USD_PER_M"] == ""
+
+    # 不在内置价目表里的 Claude 模型：占位信息为 null
+    assert client.put("/api/settings/ai", json={"CLAUDE_MODEL_NAME": "relay-claude-x"}).status_code == 200
+    assert client.get("/api/settings/ai").json()["CLAUDE_BUILTIN_PRICES"] is None

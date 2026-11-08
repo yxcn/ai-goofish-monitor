@@ -13,6 +13,7 @@ from src.infrastructure.external.claude_client import (
     normalize_claude_model,
 )
 from src.services.ai_request_compat import AIRuntimeLimits
+from src.services.ai_usage import parse_price_env
 
 
 load_dotenv(interpolate=False)  # 不展开 ${...}：WEBHOOK_BODY 之类的模板占位符要原样保留
@@ -39,6 +40,13 @@ MODEL_NAME = os.getenv("OPENAI_MODEL_NAME")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
 CLAUDE_BASE_URL = normalize_claude_base_url(os.getenv("CLAUDE_BASE_URL"))
 CLAUDE_MODEL_NAME = normalize_claude_model(os.getenv("CLAUDE_MODEL_NAME"))
+# AI 单价（美元 / 百万 token）：结果页按它显示每件商品的分析成本。留空时 Claude 官方模型查内置价目表，其余不算成本
+OPENAI_PRICE_INPUT_USD_PER_M = parse_price_env(os.getenv("OPENAI_PRICE_INPUT_USD_PER_M"))
+OPENAI_PRICE_OUTPUT_USD_PER_M = parse_price_env(os.getenv("OPENAI_PRICE_OUTPUT_USD_PER_M"))
+OPENAI_PRICE_CACHE_READ_USD_PER_M = parse_price_env(os.getenv("OPENAI_PRICE_CACHE_READ_USD_PER_M"))
+CLAUDE_PRICE_INPUT_USD_PER_M = parse_price_env(os.getenv("CLAUDE_PRICE_INPUT_USD_PER_M"))
+CLAUDE_PRICE_OUTPUT_USD_PER_M = parse_price_env(os.getenv("CLAUDE_PRICE_OUTPUT_USD_PER_M"))
+CLAUDE_PRICE_CACHE_READ_USD_PER_M = parse_price_env(os.getenv("CLAUDE_PRICE_CACHE_READ_USD_PER_M"))
 PROXY_URL = os.getenv("PROXY_URL")
 NTFY_TOPIC_URL = os.getenv("NTFY_TOPIC_URL")
 GOTIFY_URL = os.getenv("GOTIFY_URL")

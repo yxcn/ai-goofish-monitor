@@ -66,6 +66,18 @@ export interface CriteriaEntry {
   [key: string]: unknown;
 }
 
+// AI 用量：本商品所有请求的合计（含重试）。网关没返回 usage 时 token 字段为 null；没配单价时 cost_usd 为 null
+export interface AiUsage {
+  input_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  calls: number;
+  elapsed_ms: number;
+  cost_usd: number | null;
+}
+
 export interface AiAnalysis {
   is_recommended: boolean;
   reason: string;
@@ -78,6 +90,8 @@ export interface AiAnalysis {
   // 哪家、哪个模型给的结论（2026-11 加入系统设置切换提供方之后才有）
   ai_provider?: 'openai' | 'claude';
   ai_model?: string;
+  // 本商品的耗时 / token / 成本（2026-11 加入）；更早的记录没有
+  ai_usage?: AiUsage;
   risk_tags?: string[];
   criteria_analysis?: Record<string, CriteriaEntry>;
   matched_keywords?: string[];

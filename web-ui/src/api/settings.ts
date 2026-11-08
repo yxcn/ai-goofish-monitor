@@ -59,6 +59,14 @@ export interface NotificationTestResponse {
 
 export type AiProvider = 'openai' | 'claude'
 
+// 美元 / 百万 token
+export interface ModelPrices {
+  input: number
+  output: number
+  cache_read: number
+  cache_write: number
+}
+
 export interface AiSettings {
   AI_PROVIDER?: AiProvider
   OPENAI_API_KEY?: string
@@ -69,6 +77,15 @@ export interface AiSettings {
   CLAUDE_MODEL_NAME?: string
   SKIP_AI_ANALYSIS?: boolean
   PROXY_URL?: string
+  // 单价（美元 / 百万 token），字符串：空串 = 未配置
+  OPENAI_PRICE_INPUT_USD_PER_M?: string
+  OPENAI_PRICE_OUTPUT_USD_PER_M?: string
+  OPENAI_PRICE_CACHE_READ_USD_PER_M?: string
+  CLAUDE_PRICE_INPUT_USD_PER_M?: string
+  CLAUDE_PRICE_OUTPUT_USD_PER_M?: string
+  CLAUDE_PRICE_CACHE_READ_USD_PER_M?: string
+  // 只读：已保存的 Claude 模型在内置价目表里的单价，不在表里为 null
+  CLAUDE_BUILTIN_PRICES?: ModelPrices | null
 }
 
 // 测试连接：provider 指定测哪一家（不传 = OpenAI）

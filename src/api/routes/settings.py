@@ -4,7 +4,7 @@
 import asyncio
 import importlib
 import os
-from typing import Optional
+from typing import Optional, Union
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException
@@ -42,6 +42,11 @@ from src.services.ai_request_compat import (
     use_max_completion_tokens,
 )
 from src.services.ai_response_parser import extract_ai_response_content
+from src.services.ai_usage import (
+    AI_PRICE_SETTING_FIELDS,
+    builtin_claude_prices,
+    normalize_price_setting,
+)
 from src.services.notification_config_service import (
     NotificationSettingsValidationError,
     build_configured_channels,
@@ -134,6 +139,13 @@ class AISettingsModel(BaseModel):
     CLAUDE_MODEL_NAME: Optional[str] = None
     SKIP_AI_ANALYSIS: Optional[bool] = None
     PROXY_URL: Optional[str] = None
+    # 单价（美元 / 百万 token）：前端传字符串，空串 = 清空；None = 不改
+    OPENAI_PRICE_INPUT_USD_PER_M: Optional[Union[str, float, int]] = None
+    OPENAI_PRICE_OUTPUT_USD_PER_M: Optional[Union[str, float, int]] = None
+    OPENAI_PRICE_CACHE_READ_USD_PER_M: Optional[Union[str, float, int]] = None
+    CLAUDE_PRICE_INPUT_USD_PER_M: Optional[Union[str, float, int]] = None
+    CLAUDE_PRICE_OUTPUT_USD_PER_M: Optional[Union[str, float, int]] = None
+    CLAUDE_PRICE_CACHE_READ_USD_PER_M: Optional[Union[str, float, int]] = None
 
 
 class RotationSettingsModel(BaseModel):
@@ -310,7 +322,7 @@ def _validate_ai_provider(value: Optional[str]) -> str:
 
 @router.get("/ai")
 async def get_ai_settings():
-    return {
+    response = {
         # Key 永远不回传前端，只回传地址和模型名
         "AI_PROVIDER": _current_ai_provider(),
         "OPENAI_BASE_URL": env_manager.get_value("OPENAI_BASE_URL", ""),
@@ -320,6 +332,29 @@ async def get_ai_settings():
         "SKIP_AI_ANALYSIS": env_manager.get_value("SKIP_AI_ANALYSIS", "false").lower() == "true",
         "PROXY_URL": env_manager.get_value("PROXY_URL", ""),
     }
+    for field in AI_PRICE_SETTING_FIELDS:
+        response[field] = env_manager.get_value(field, "")
+    # 已保存的 Claude 模型在内置价目表里的单价，设置页拿来当占位提示；不在表里为 None
+    builtin = builtin_claude_prices(normalize_claude_model(env_manager.get_value("CLAUDE_MODEL_NAME", "")))
+    response["CLAUDE_BUILTIN_PRICES"] = builtin.as_dict() if builtin else None
+    return response
+
+
+def _validate_price_updates(settings: "AISettingsModel") -> dict[str, str]:
+    """单价字段：规范写法；每家的输入价和输出价要一起填或一起空（和已保存的值合起来看）。"""
+    updates: dict[str, str] = {}
+    for field in AI_PRICE_SETTING_FIELDS:
+        value = getattr(settings, field)
+        if value is not None:
+            updates[field] = normalize_price_setting(value, field_label=field)
+    for prefix, label in (("OPENAI", "OpenAI"), ("CLAUDE", "Claude")):
+        effective = {}
+        for kind in ("INPUT", "OUTPUT"):
+            field = f"{prefix}_PRICE_{kind}_USD_PER_M"
+            effective[kind] = updates[field] if field in updates else str(env_manager.get_value(field, "") or "").strip()
+        if bool(effective["INPUT"]) != bool(effective["OUTPUT"]):
+            raise ValueError(f"{label} 的输入单价和输出单价要一起填写，或一起留空")
+    return updates
 
 
 @router.put("/ai")
@@ -335,6 +370,7 @@ async def update_ai_settings(settings: AISettingsModel):
         if settings.PROXY_URL is not None:
             settings.PROXY_URL = validate_proxy_url(settings.PROXY_URL, field_label="PROXY_URL")
         _ensure_claude_ready_if_selected(settings)
+        updates.update(_validate_price_updates(settings))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if settings.AI_PROVIDER is not None:

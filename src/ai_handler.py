@@ -27,9 +27,15 @@ from src.config import (
     AI_PROVIDER,
     CLAUDE_BASE_URL,
     CLAUDE_MODEL_NAME,
+    CLAUDE_PRICE_CACHE_READ_USD_PER_M,
+    CLAUDE_PRICE_INPUT_USD_PER_M,
+    CLAUDE_PRICE_OUTPUT_USD_PER_M,
     CLAUDE_REQUEST_TIMEOUT_SECONDS,
     IMAGE_DOWNLOAD_HEADERS,
     IMAGE_SAVE_DIR,
+    OPENAI_PRICE_CACHE_READ_USD_PER_M,
+    OPENAI_PRICE_INPUT_USD_PER_M,
+    OPENAI_PRICE_OUTPUT_USD_PER_M,
     TASK_IMAGE_DIR_PREFIX,
     MODEL_NAME,
     ENABLE_RESPONSE_FORMAT,
@@ -75,6 +81,7 @@ from src.services.ai_request_compat import (
     read_image_mime,
     retry_backoff_seconds,
 )
+from src.services.ai_usage import AIUsageTotals, describe_usage, resolve_model_prices
 from src.services.notification_service import NotificationService, build_notification_service
 from src.utils import convert_goofish_link
 
@@ -573,7 +580,7 @@ async def send_ntfy_notification(product_data, reason):
     return results
 
 
-async def _run_ai_analysis_attempts(messages, product_id) -> dict:
+async def _run_ai_analysis_attempts(messages, product_id, totals: AIUsageTotals) -> dict:
     """带分类重试的 AI 调用循环（不含总时限，由 get_ai_analysis 套 wait_for）。
 
     - 兼容性探测错误：按模块级 CompatProfile 换参数立刻重试，并缓存给后续商品；
@@ -581,6 +588,8 @@ async def _run_ai_analysis_attempts(messages, product_id) -> dict:
     - 429 / 5xx / 网络超时：按 AI_RETRY_BACKOFF_SECONDS 退避；
     - 其余 4xx：直接失败；
     - 输出被截断：max_output_tokens 提高到 1.5 倍只再试一次，仍截断则失败。
+
+    每个拿到的响应（含截断的）都记进 totals：重试花的 token 也是真花的。
     """
     profile = _compat_profile
     attempt = 0
@@ -615,6 +624,7 @@ async def _run_ai_analysis_attempts(messages, product_id) -> dict:
 
         try:
             response = await create_ai_response_async(client, api_mode, request_params)
+            totals.add_response(response, AI_PROVIDER_OPENAI)
             ai_response_content = extract_ai_response_content(response)
 
             if AI_DEBUG_MODE:
@@ -700,7 +710,7 @@ def _parse_and_validate_ai_text(ai_response_content: str) -> dict:
     return parsed_response
 
 
-async def _run_claude_analysis_attempts(messages, product_id) -> dict:
+async def _run_claude_analysis_attempts(messages, product_id, totals: AIUsageTotals) -> dict:
     """Claude 版的分析循环：重试分类同 OpenAI，解析 / 字段校验失败也会重试。"""
     if AI_DEBUG_MODE:
         safe_print(
@@ -717,6 +727,7 @@ async def _run_claude_analysis_attempts(messages, product_id) -> dict:
         max_attempts=AI_MAX_ATTEMPTS,
         backoff_schedule=AI_RETRY_BACKOFF_SECONDS,
         postprocess=_parse_and_validate_ai_text,
+        on_response=lambda response: totals.add_response(response, AI_PROVIDER_CLAUDE),
         log=safe_print,
     )
     safe_print(f"   [AI分析] Claude（{model_name}）分析成功，响应格式验证通过")
@@ -775,33 +786,59 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
         user_content = build_user_message_content(combined_text_prompt, image_data_urls)
         messages = [{"role": "user", "content": user_content}]
 
-    if not AI_DEBUG_MODE:
-        return await _analyze_with_total_timeout(messages, product_id)
-
-    # 调试模式：把请求摘要和最终结果 / 错误一起落盘，文件名带商品 ID
+    # 用量从这里开始计：耗时含重试和退避，token 含每一次实际发出的请求
+    totals = AIUsageTotals()
+    started_at = time.perf_counter()
     result = None
     error: Optional[BaseException] = None
     try:
-        result = await _analyze_with_total_timeout(messages, product_id)
+        result = await _analyze_with_total_timeout(messages, product_id, totals)
+        _attach_ai_usage(result, totals, started_at)
         return result
     except Exception as exc:
         error = exc
         raise
     finally:
-        _write_ai_debug_log(
-            product_id,
-            build_ai_debug_log_payload(
-                product_data=product_data,
-                messages=messages,
-                image_data_urls=image_data_urls,
-                api_mode=CLAUDE_API_MODE if use_claude else _compat_profile.api_mode,
-                result=result,
-                error=error,
-            ),
-        )
+        if AI_DEBUG_MODE:
+            # 调试模式：把请求摘要和最终结果 / 错误一起落盘，文件名带商品 ID
+            _write_ai_debug_log(
+                product_id,
+                build_ai_debug_log_payload(
+                    product_data=product_data,
+                    messages=messages,
+                    image_data_urls=image_data_urls,
+                    api_mode=CLAUDE_API_MODE if use_claude else _compat_profile.api_mode,
+                    result=result,
+                    error=error,
+                ),
+            )
 
 
-async def _analyze_with_total_timeout(messages, product_id):
+def _configured_price_overrides(provider: str) -> dict:
+    """系统设置里手填的单价（美元 / 百万 token），按提供方各一组。"""
+    if provider == AI_PROVIDER_CLAUDE:
+        return {
+            "input_usd_per_m": CLAUDE_PRICE_INPUT_USD_PER_M,
+            "output_usd_per_m": CLAUDE_PRICE_OUTPUT_USD_PER_M,
+            "cache_read_usd_per_m": CLAUDE_PRICE_CACHE_READ_USD_PER_M,
+        }
+    return {
+        "input_usd_per_m": OPENAI_PRICE_INPUT_USD_PER_M,
+        "output_usd_per_m": OPENAI_PRICE_OUTPUT_USD_PER_M,
+        "cache_read_usd_per_m": OPENAI_PRICE_CACHE_READ_USD_PER_M,
+    }
+
+
+def _attach_ai_usage(result: dict, totals: AIUsageTotals, started_at: float) -> None:
+    """把本商品的耗时 / token / 成本写进分析结果（ai_analysis.ai_usage），并打一行日志。"""
+    provider = result.get("ai_provider") or AI_PROVIDER_OPENAI
+    prices = resolve_model_prices(provider, result.get("ai_model"), **_configured_price_overrides(provider))
+    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    result["ai_usage"] = totals.to_record(elapsed_ms=elapsed_ms, prices=prices)
+    safe_print(f"   [AI分析] {describe_usage(result['ai_usage'])}")
+
+
+async def _analyze_with_total_timeout(messages, product_id, totals: AIUsageTotals):
     if _uses_claude():
         runner = _run_claude_analysis_attempts
         total_timeout = claude_total_timeout(
@@ -811,11 +848,11 @@ async def _analyze_with_total_timeout(messages, product_id):
         runner = _run_ai_analysis_attempts
         total_timeout = AI_ANALYSIS_TOTAL_TIMEOUT_SECONDS
     if not total_timeout or total_timeout <= 0:
-        return await runner(messages, product_id)
+        return await runner(messages, product_id, totals)
 
     try:
         return await asyncio.wait_for(
-            runner(messages, product_id),
+            runner(messages, product_id, totals),
             timeout=total_timeout,
         )
     except asyncio.TimeoutError:

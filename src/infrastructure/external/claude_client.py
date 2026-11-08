@@ -318,6 +318,7 @@ async def call_claude_with_retries(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     backoff_schedule: Iterable[float] = DEFAULT_RETRY_BACKOFF_SECONDS,
     postprocess: Optional[Callable[[str], Any]] = None,
+    on_response: Optional[Callable[[Any], None]] = None,
     log: Callable[[str], None] = print,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> Tuple[Any, str]:
@@ -327,6 +328,8 @@ async def call_claude_with_retries(
     - 429 / 5xx / 529 / 网络超时：按 backoff_schedule 退避；
     - 其余 4xx、拒答：直接失败；
     - 输出被截断：max_tokens 提高到 1.5 倍只再试一次。
+
+    on_response：每拿到一个响应对象就回调一次（截断、拒答的也算），调用方用它累计 token 用量。
     """
     system_parts, claude_messages = build_claude_messages(messages)
     schedule = tuple(backoff_schedule)
@@ -346,6 +349,8 @@ async def call_claude_with_retries(
         use_fallback = state.refusal_fallback_enabled and supports_refusal_fallback(model, base_url)
         try:
             response = await _create_message(client, params, use_fallback=use_fallback, timeout=timeout)
+            if on_response is not None:
+                on_response(response)
             text = extract_claude_text(response)
             result = postprocess(text) if postprocess else text
             return result, response_model_name(response, model)

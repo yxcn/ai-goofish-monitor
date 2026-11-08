@@ -10,7 +10,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import Badge from '@/components/ui/badge/Badge.vue'
-import { ExternalLink, TrendingUp, TrendingDown, Info, User, Clock, CheckCircle2, XCircle, AlertCircle, EyeOff, Eye, ChevronDown, Tag, HelpCircle, MessageCircle, ShoppingBag, Ban, Undo2 } from 'lucide-vue-next'
+import { ExternalLink, TrendingUp, TrendingDown, Info, User, Clock, Cpu, CheckCircle2, XCircle, AlertCircle, EyeOff, Eye, ChevronDown, Tag, HelpCircle, MessageCircle, ShoppingBag, Ban, Undo2 } from 'lucide-vue-next'
 import { formatDateTime } from '@/i18n'
 
 interface Props {
@@ -95,9 +95,55 @@ const facts = computed<Fact[]>(() => {
   if (lastActive) list.push({ key: 'active', text: lastActive, detail: true })
   if (replyRate) list.push({ key: 'replyRate', text: t('results.card.replyRate', { rate: replyRate }), detail: true })
   if (replyInterval) list.push({ key: 'replyIn', text: t('results.card.replyIn', { time: replyInterval }), detail: true })
-  const aiModel = String(ai.value?.ai_model ?? '').trim()
-  if (aiModel) list.push({ key: 'aiModel', text: t('results.card.analyzedBy', { model: aiModel }), detail: true })
   return list.filter((fact) => detailsOpen.value || !fact.detail)
+})
+// 页脚第二行：模型 · 耗时 · token · 成本。老记录只有模型名（或什么都没有），缺哪项就不显示哪项
+const aiModel = computed(() => String(ai.value?.ai_model ?? '').trim())
+const aiUsage = computed(() => ai.value?.ai_usage)
+function formatElapsed(ms: number): string {
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  return `${Math.floor(seconds / 60)}m${Math.round(seconds % 60).toString().padStart(2, '0')}s`
+}
+function formatTokens(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(2).replace(/\.?0+$/, '')}M`
+  if (count >= 1000) return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}k`
+  return String(count)
+}
+// 三位小数；不到 0.0005 美元的（便宜模型）显示 <$0.001 而不是 $0.000
+function formatCost(usd: number): string {
+  if (usd > 0 && usd < 0.0005) return '<$0.001'
+  return `$${usd.toFixed(3)}`
+}
+const aiMetaParts = computed<string[]>(() => {
+  const parts: string[] = []
+  if (aiModel.value) parts.push(aiModel.value)
+  const usage = aiUsage.value
+  if (usage) {
+    if (typeof usage.elapsed_ms === 'number') parts.push(formatElapsed(usage.elapsed_ms))
+    if (typeof usage.total_tokens === 'number') parts.push(t('results.card.tokens', { count: formatTokens(usage.total_tokens) }))
+    if (typeof usage.cost_usd === 'number') parts.push(formatCost(usage.cost_usd))
+  }
+  return parts
+})
+// 悬停提示：输入 / 缓存 / 输出拆分、请求次数，以及为什么没有成本
+const aiMetaTitle = computed(() => {
+  const lines: string[] = []
+  if (aiModel.value) lines.push(t('results.card.analyzedBy', { model: aiModel.value }))
+  const usage = aiUsage.value
+  if (!usage) return lines.join('\n')
+  if (typeof usage.total_tokens === 'number') {
+    const breakdown = [t('results.card.usageInput', { count: (usage.input_tokens ?? 0).toLocaleString() })]
+    if (usage.cache_read_tokens) breakdown.push(t('results.card.usageCacheRead', { count: usage.cache_read_tokens.toLocaleString() }))
+    if (usage.cache_write_tokens) breakdown.push(t('results.card.usageCacheWrite', { count: usage.cache_write_tokens.toLocaleString() }))
+    breakdown.push(t('results.card.usageOutput', { count: (usage.output_tokens ?? 0).toLocaleString() }))
+    lines.push(breakdown.join(' · '))
+    if (typeof usage.cost_usd !== 'number') lines.push(t('results.card.usageNoPrice'))
+  } else {
+    lines.push(t('results.card.usageNoTokens'))
+  }
+  if (usage.calls > 1) lines.push(t('results.card.usageCalls', { count: usage.calls }))
+  return lines.join('\n')
 })
 // 划线原价：占位符（暂无）或和现价相同时不显示
 const originalPrice = computed(() => {
@@ -522,31 +568,38 @@ const priceLine = computed(() => {
       </div>
     </CardContent>
 
-    <!-- 页脚：抓取时间 | 展开/收起 · 详情链接；昵称已经在卖家画像标题里，没有画像时才放这 -->
-    <CardFooter class="px-3 py-2 bg-slate-50/30 border-t border-slate-100/60 flex items-center justify-between gap-2 text-[10px]">
-      <div class="flex min-w-0 items-center gap-2 text-slate-400">
-        <div v-if="!profile" class="flex min-w-0 items-center gap-1">
-          <User class="w-3 h-3 shrink-0" />
-          <span class="truncate max-w-[60px]">{{ seller.卖家昵称 || info.卖家昵称 || t('results.card.anonymous') }}</span>
+    <!-- 页脚：抓取时间 | 展开/收起 · 详情链接；昵称已经在卖家画像标题里，没有画像时才放这。
+         第二行是 AI 用量：模型 · 耗时 · token · 成本，悬停看拆分 -->
+    <CardFooter class="px-3 py-2 bg-slate-50/30 border-t border-slate-100/60 flex flex-col items-stretch gap-1 text-[10px]">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-2 text-slate-400">
+          <div v-if="!profile" class="flex min-w-0 items-center gap-1">
+            <User class="w-3 h-3 shrink-0" />
+            <span class="truncate max-w-[60px]">{{ seller.卖家昵称 || info.卖家昵称 || t('results.card.anonymous') }}</span>
+          </div>
+          <div class="flex shrink-0 items-center gap-1">
+            <Clock class="w-3 h-3" />
+            <span>{{ t('results.card.crawledAt', { time: crawlTime }) }}</span>
+          </div>
         </div>
-        <div class="flex shrink-0 items-center gap-1">
-          <Clock class="w-3 h-3" />
-          <span>{{ t('results.card.crawledAt', { time: crawlTime }) }}</span>
+        <div class="flex shrink-0 items-center gap-2.5">
+          <button
+            type="button"
+            class="inline-flex items-center gap-0.5 font-medium text-slate-400 transition-colors hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+            :aria-expanded="detailsOpen"
+            @click="toggleDetails"
+          >
+            {{ detailsOpen ? t('results.card.hideDetails') : t('results.card.showDetails') }}
+            <ChevronDown class="w-3 h-3 transition-transform" :class="{ 'rotate-180': detailsOpen }" />
+          </button>
+          <a :href="info.商品链接" target="_blank" rel="noopener noreferrer" class="flex items-center gap-1 text-primary font-bold hover:gap-1.5 transition-all">
+            {{ t('results.card.detail') }} <ExternalLink class="w-3 h-3" />
+          </a>
         </div>
       </div>
-      <div class="flex shrink-0 items-center gap-2.5">
-        <button
-          type="button"
-          class="inline-flex items-center gap-0.5 font-medium text-slate-400 transition-colors hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
-          :aria-expanded="detailsOpen"
-          @click="toggleDetails"
-        >
-          {{ detailsOpen ? t('results.card.hideDetails') : t('results.card.showDetails') }}
-          <ChevronDown class="w-3 h-3 transition-transform" :class="{ 'rotate-180': detailsOpen }" />
-        </button>
-        <a :href="info.商品链接" target="_blank" rel="noopener noreferrer" class="flex items-center gap-1 text-primary font-bold hover:gap-1.5 transition-all">
-          {{ t('results.card.detail') }} <ExternalLink class="w-3 h-3" />
-        </a>
+      <div v-if="aiMetaParts.length" class="flex min-w-0 items-center gap-1 text-slate-400" :title="aiMetaTitle" data-testid="ai-usage">
+        <Cpu class="w-3 h-3 shrink-0" />
+        <span class="truncate">{{ aiMetaParts.join(' · ') }}</span>
       </div>
     </CardFooter>
   </Card>

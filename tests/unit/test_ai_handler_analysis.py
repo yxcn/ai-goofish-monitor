@@ -569,3 +569,93 @@ def test_get_ai_analysis_stops_when_gateway_keeps_rejecting_after_profile_adjust
         _analyze()
 
     assert calls["n"] == 2  # 第一次学到"禁用 JSON 输出"并重试，第二次同样报错就放弃
+
+
+# ---------------------------------------------------------------- 用量 / 成本（ai_usage）
+
+_VALID_JSON = (
+    '{"prompt_version":"v1","is_recommended":true,'
+    '"reason":"ok","risk_tags":[],"criteria_analysis":{"seller_type":"个人"}}'
+)
+
+
+def test_get_ai_analysis_records_usage_across_truncation_retry(monkeypatch, tmp_path):
+    """截断重试的那次请求也花了钱：token 按两次累加，成本按系统设置里的单价算。"""
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def _usage(output_tokens):
+        return SimpleNamespace(
+            input_tokens=1000,
+            output_tokens=output_tokens,
+            input_tokens_details=SimpleNamespace(cached_tokens=200),
+        )
+
+    async def fake_create(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return SimpleNamespace(
+                output_text='{"prompt_version":',
+                status="incomplete",
+                incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+                usage=_usage(50),
+            )
+        return SimpleNamespace(output_text=_VALID_JSON, usage=_usage(300))
+
+    monkeypatch.setattr(ai_handler, "client", _build_fake_client(fake_create))
+    monkeypatch.setattr(ai_handler, "MODEL_NAME", "fake-model")
+    monkeypatch.setattr(ai_handler, "ENABLE_RESPONSE_FORMAT", True)
+    monkeypatch.setattr(app_config, "ENABLE_RESPONSE_FORMAT", True)
+    monkeypatch.setattr(ai_handler, "OPENAI_PRICE_INPUT_USD_PER_M", 1.0)
+    monkeypatch.setattr(ai_handler, "OPENAI_PRICE_OUTPUT_USD_PER_M", 2.0)
+    monkeypatch.setattr(ai_handler, "OPENAI_PRICE_CACHE_READ_USD_PER_M", None)
+
+    result = asyncio.run(
+        ai_handler.get_ai_analysis(
+            {"商品信息": {"商品ID": "10", "商品标题": "测试商品10"}},
+            image_paths=[],
+            prompt_text="请输出 JSON",
+        )
+    )
+
+    assert len(calls) == 2
+    usage = result["ai_usage"]
+    assert usage["calls"] == 2
+    assert usage["input_tokens"] == 1600
+    assert usage["cache_read_tokens"] == 400
+    assert usage["cache_write_tokens"] == 0
+    assert usage["output_tokens"] == 350
+    assert usage["total_tokens"] == 2350
+    # (1600*1 + 400*1 缓存按输入价 + 350*2) / 1e6
+    assert usage["cost_usd"] == pytest.approx(0.0027)
+    assert isinstance(usage["elapsed_ms"], int) and usage["elapsed_ms"] >= 0
+    assert result["ai_model"] == "fake-model"
+
+
+def test_get_ai_analysis_marks_tokens_unknown_when_gateway_omits_usage(monkeypatch, tmp_path):
+    """中转站不返回 usage：耗时照记，token 和成本为 None，前端据此不显示 0。"""
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_create(**_kwargs):
+        return SimpleNamespace(output_text=_VALID_JSON)
+
+    monkeypatch.setattr(ai_handler, "client", _build_fake_client(fake_create))
+    monkeypatch.setattr(ai_handler, "MODEL_NAME", "fake-model")
+    monkeypatch.setattr(ai_handler, "ENABLE_RESPONSE_FORMAT", True)
+    monkeypatch.setattr(app_config, "ENABLE_RESPONSE_FORMAT", True)
+    monkeypatch.setattr(ai_handler, "OPENAI_PRICE_INPUT_USD_PER_M", 1.0)
+    monkeypatch.setattr(ai_handler, "OPENAI_PRICE_OUTPUT_USD_PER_M", 2.0)
+
+    result = asyncio.run(
+        ai_handler.get_ai_analysis(
+            {"商品信息": {"商品ID": "11", "商品标题": "测试商品11"}},
+            image_paths=[],
+            prompt_text="请输出 JSON",
+        )
+    )
+
+    usage = result["ai_usage"]
+    assert usage["calls"] == 1
+    assert usage["total_tokens"] is None and usage["input_tokens"] is None
+    assert usage["cost_usd"] is None
+    assert usage["elapsed_ms"] >= 0
