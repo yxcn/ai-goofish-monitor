@@ -14,6 +14,18 @@ from fastapi.testclient import TestClient
 repo_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(repo_root))
 
+# 测试不能跟着本机 .env 选 AI 提供方：设置页切到 Claude 后，src.config 会用 .env 里的真 Key
+# 建 Claude 客户端，按 OpenAI 写的测试就会真的去调 Claude API（花钱）。
+# load_dotenv 不覆盖已有的环境变量，所以在第一次导入 src 之前先钉死；每个测试开头再钉一次（见下面的 fixture），
+# 因为有些路径会 load_dotenv(override=True) 把仓库 .env 重新灌进 os.environ。
+_PINNED_AI_ENV = {
+    "AI_PROVIDER": "openai",
+    "CLAUDE_API_KEY": "",
+    "CLAUDE_BASE_URL": "",
+    "CLAUDE_MODEL_NAME": "",
+}
+os.environ.update(_PINNED_AI_ENV)
+
 from src.api import dependencies as deps
 from src.api.routes import tasks
 from src.infrastructure.persistence.sqlite_bootstrap import reset_bootstrap_state
@@ -43,6 +55,34 @@ def _repo_prompts_untouched():
         f"测试改动了仓库的 prompts/ 目录：新增 {added}，删除 {removed}。"
         "写文件的测试请用 monkeypatch.chdir(tmp_path)。"
     )
+
+
+@pytest.fixture(autouse=True)
+def _pin_ai_provider_env(monkeypatch):
+    for key, value in _PINNED_AI_ENV.items():
+        monkeypatch.setenv(key, value)
+
+
+class RealClaudeRequestBlocked(RuntimeError):
+    pass
+
+
+@pytest.fixture(autouse=True)
+def _block_real_claude_requests(monkeypatch):
+    # 兜底：哪条路径漏了上面的钉值，也不能真的发请求到 Anthropic。要测 Claude 请用假客户端。
+    try:
+        from anthropic import _base_client
+    except ImportError:
+        return
+
+    def _blocked(*args, **kwargs):
+        raise RealClaudeRequestBlocked("测试里不允许真的调用 Claude API，请换成假客户端")
+
+    async def _blocked_async(*args, **kwargs):
+        _blocked()
+
+    monkeypatch.setattr(_base_client.SyncAPIClient, "request", _blocked)
+    monkeypatch.setattr(_base_client.AsyncAPIClient, "request", _blocked_async)
 
 
 @pytest.fixture(autouse=True)
