@@ -137,6 +137,9 @@ class ProcessService:
         child_env["PYTHONUTF8"] = "1"
         return await asyncio.create_subprocess_exec(
             *self._build_spawn_command(task_id, task_name),
+            # 不继承服务的标准输入：服务在终端里跑时子进程的 stdin 是 tty，
+            # 调试模式（SPIDER_DEBUG_LIMIT）收尾的 input("按回车键关闭浏览器...") 会一直卡住
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=log_file_handle,
             stderr=log_file_handle,
             # 独立进程组，stop 时 killpg 能连带结束 playwright 子进程；

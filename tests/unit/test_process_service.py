@@ -218,3 +218,19 @@ def test_spawn_uses_start_new_session_instead_of_preexec_fn(monkeypatch, tmp_pat
     assert "preexec_fn" not in captured
     assert captured["start_new_session"] is (sys.platform != "win32")
     assert captured["env"]["PYTHONUTF8"] == "1"
+
+
+def test_spawn_does_not_inherit_server_stdin(monkeypatch, tmp_path):
+    # 服务在终端里跑时 stdin 是 tty；子进程继承它，调试模式收尾的 input() 会让每轮都卡住
+    captured = {}
+
+    async def fake_create_subprocess_exec(*_args, **kwargs):
+        captured.update(kwargs)
+        return FakeProcess(pid=1)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    service = ProcessService()
+    with open(tmp_path / "x.log", "a", encoding="utf-8") as handle:
+        asyncio.run(service._spawn_process(1, "t", handle))
+
+    assert captured["stdin"] is asyncio.subprocess.DEVNULL
