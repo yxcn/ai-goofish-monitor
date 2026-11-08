@@ -28,10 +28,10 @@ from src.services.ai_response_parser import (
 
 
 DEFAULT_CLAUDE_BASE_URL = "https://api.anthropic.com"
-DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-5-5"
 CLAUDE_API_MODE = "claude_messages"
 
-# Claude Opus 5.5 的思考关不掉，max_tokens 是「思考 + 正文」的总上限，原来的 4000 会截掉正文。
+# Claude Sonnet 5.5 / Opus 5.5 的思考都关不掉，max_tokens 是「思考 + 正文」的总上限，原来的 4000 会截掉正文。
 # 16000 仍在 SDK 非流式请求的允许范围内。
 CLAUDE_MIN_OUTPUT_TOKENS = 16000
 # 带思考 + 多张图的单次请求比 OpenAI 慢，120s 偏紧

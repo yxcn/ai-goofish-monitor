@@ -403,7 +403,7 @@ const zhCN = {
       providerOpenai: 'OpenAI（兼容接口）',
       providerClaude: 'Claude',
       claudeBaseUrlHint: '留空使用官方地址 https://api.anthropic.com',
-      claudeModelHint: '留空默认 claude-opus-5-5',
+      claudeModelHint: '留空默认 claude-sonnet-5-5（推荐）',
       savedHint: '正在运行的抓取本轮不变，下一轮开始使用新设置。',
     },
     rotation: { saved: '轮换设置已保存', saveFailed: '轮换设置保存失败' },

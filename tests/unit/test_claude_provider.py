@@ -445,7 +445,7 @@ def test_spider_config_builds_claude_client_when_selected(tmp_path):
                 "assert config.client is None\n"
                 "assert isinstance(config.claude_client, anthropic.AsyncAnthropic)\n"
                 "assert str(config.claude_client.base_url).rstrip('/') == 'https://api.anthropic.com'\n"
-                "assert config.CLAUDE_MODEL_NAME == 'claude-opus-5-5'\n"
+                "assert config.CLAUDE_MODEL_NAME == 'claude-sonnet-5-5'\n"
             ),
         ],
         cwd=tmp_path,

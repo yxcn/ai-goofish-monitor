@@ -267,7 +267,7 @@ watch(selectedPrompt, async (value) => {
               </div>
               <div class="grid gap-2">
                 <Label>{{ t('settings.ai.modelName') }}</Label>
-                <Input v-model="aiSettings.CLAUDE_MODEL_NAME" placeholder="claude-opus-5-5" />
+                <Input v-model="aiSettings.CLAUDE_MODEL_NAME" placeholder="claude-sonnet-5-5" />
                 <p class="text-xs text-gray-500">{{ t('settings.ai.claudeModelHint') }}</p>
               </div>
             </template>

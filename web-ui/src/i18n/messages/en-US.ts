@@ -403,7 +403,7 @@ const enUS = {
       providerOpenai: 'OpenAI (compatible API)',
       providerClaude: 'Claude',
       claudeBaseUrlHint: 'Leave blank for the official endpoint https://api.anthropic.com',
-      claudeModelHint: 'Defaults to claude-opus-5-5 when blank',
+      claudeModelHint: 'Defaults to claude-sonnet-5-5 (recommended) when blank',
       savedHint: 'A scrape already running keeps its provider; the next run uses the new settings.',
     },
     rotation: { saved: 'Rotation settings saved.', saveFailed: 'Failed to save rotation settings.' },
