@@ -300,6 +300,13 @@ def _is_transport_error(error: BaseException) -> bool:
             return True
     except Exception:  # pragma: no cover - openai 未安装
         pass
+    try:  # anthropic 只在选了 Claude 时才需要；APITimeoutError 是 APIConnectionError 的子类
+        from anthropic import APIConnectionError as ClaudeConnectionError  # noqa: WPS433
+
+        if isinstance(error, ClaudeConnectionError):
+            return True
+    except Exception:  # pragma: no cover - anthropic 未安装
+        pass
     try:
         import httpx  # noqa: WPS433
 

@@ -39,6 +39,14 @@ from src.services.ai_response_parser import (
     extract_ai_response_content,
     parse_ai_response_json,
 )
+from src.infrastructure.external.claude_client import (
+    ClaudeCallState,
+    call_claude_with_retries,
+    claude_request_timeout,
+    claude_total_timeout,
+    create_async_claude_client,
+    normalize_claude_model,
+)
 
 
 class AIAnalysisTimeoutError(TimeoutError):
@@ -236,6 +244,7 @@ class AIClient:
         # 兼容性探测结果按客户端实例缓存：第一个商品学到的（api_mode / response_format /
         # temperature / max_tokens 是否可用）后续商品直接复用；refresh() 时重置。
         self.compat_profile: CompatProfile = CompatProfile()
+        self.claude_state: ClaudeCallState = ClaudeCallState()
         self.retry_backoff_seconds: tuple[float, ...] = DEFAULT_RETRY_BACKOFF_SECONDS
         self.refresh()
 
@@ -247,6 +256,7 @@ class AIClient:
     def refresh(self) -> None:
         self._load_settings()
         self.compat_profile = CompatProfile()
+        self.claude_state = ClaudeCallState()
         self.client = self._initialize_client()
 
     # 测试里常用 AIClient.__new__ 绕过 __init__，这几个访问器给缺失的属性兜底
@@ -268,11 +278,46 @@ class AIClient:
         schedule = getattr(self, "retry_backoff_seconds", None)
         return tuple(schedule) if schedule is not None else DEFAULT_RETRY_BACKOFF_SECONDS
 
+    def _get_claude_state(self) -> ClaudeCallState:
+        state = getattr(self, "claude_state", None)
+        if state is None:
+            state = ClaudeCallState()
+            self.claude_state = state
+        return state
+
+    def _uses_claude(self) -> bool:
+        settings = getattr(self, "settings", None)
+        return bool(settings is not None and getattr(settings, "uses_claude", False))
+
+    def _initialize_claude_client(self):
+        try:
+            if self.settings.proxy_url:
+                print(f"正在为 AI 请求使用代理: {redact_url_userinfo(self.settings.proxy_url)}")
+                os.environ['HTTP_PROXY'] = self.settings.proxy_url
+                os.environ['HTTPS_PROXY'] = self.settings.proxy_url
+
+            _sanitize_no_proxy_env()
+
+            limits = self._get_limits()
+            return create_async_claude_client(
+                api_key=self.settings.claude_api_key,
+                base_url=self.settings.claude_base_url,
+                timeout=claude_request_timeout(limits.request_timeout_seconds),
+                max_retries=limits.sdk_max_retries,
+                proxy_url=self.settings.proxy_url or None,
+            )
+        except Exception as e:
+            print(f"初始化 Claude 客户端失败: {e}")
+            return None
+
     def _initialize_client(self) -> Optional[AsyncOpenAI]:
-        """初始化 OpenAI 客户端"""
+        """初始化当前 AI 提供方的客户端（默认 OpenAI；AI_PROVIDER=claude 时是 AsyncAnthropic）"""
         if not self.settings or not self.settings.is_configured():
             print("警告：AI 配置不完整，AI 功能将不可用")
             return None
+
+        if self._uses_claude():
+            return self._initialize_claude_client()
 
         try:
             if self.settings.proxy_url:
@@ -342,7 +387,12 @@ class AIClient:
             print("AI 客户端不可用")
             return None
 
-        total_timeout = self._get_limits().total_timeout_seconds
+        limits = self._get_limits()
+        total_timeout = limits.total_timeout_seconds
+        if self._uses_claude():
+            total_timeout = claude_total_timeout(
+                total_timeout, claude_request_timeout(limits.request_timeout_seconds)
+            )
         try:
             messages = self._build_messages(product_data, image_paths, prompt_text)
             if total_timeout and total_timeout > 0:
@@ -411,7 +461,16 @@ class AIClient:
         - 其余 4xx（401/403/404/413/非兼容性 400）：直接失败；
         - 输出被截断：max_output_tokens 放大 1.5 倍只重试一次。
         ``timeout`` 为单次请求超时（秒），缺省用客户端构造时的值。
+        AI_PROVIDER=claude 时走 Claude（不发 temperature，也没有 JSON 模式开关）。
         """
+        if self._uses_claude():
+            return await self._call_claude(
+                messages,
+                max_output_tokens=max_output_tokens,
+                timeout=timeout,
+                max_attempts=max_attempts,
+            )
+
         profile = self._get_compat_profile()
         want_json = (
             self.settings.enable_response_format
@@ -478,6 +537,27 @@ class AIClient:
                         await asyncio.sleep(delay)
                 else:
                     print(f"AI 响应异常（{exc}），正在自动重试 ({attempt + 1}/{max_attempts})")
+
+    async def _call_claude(
+        self,
+        messages: List[Dict],
+        *,
+        max_output_tokens: int,
+        timeout: Optional[float],
+        max_attempts: int,
+    ) -> str:
+        text, _model_name = await call_claude_with_retries(
+            self.client,
+            model=normalize_claude_model(self.settings.claude_model_name),
+            messages=messages,
+            max_tokens=max_output_tokens,
+            state=self._get_claude_state(),
+            base_url=self.settings.claude_base_url,
+            timeout=claude_request_timeout(timeout) if timeout is not None else None,
+            max_attempts=max_attempts,
+            backoff_schedule=self._get_backoff_schedule(),
+        )
+        return text
 
     def _parse_response(self, response_text: str) -> Optional[Dict]:
         """解析 AI 响应"""

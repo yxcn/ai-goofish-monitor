@@ -20,6 +20,10 @@ _SETTINGS_ENV_KEYS = [
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
     "OPENAI_MODEL_NAME",
+    "AI_PROVIDER",
+    "CLAUDE_API_KEY",
+    "CLAUDE_BASE_URL",
+    "CLAUDE_MODEL_NAME",
     "SKIP_AI_ANALYSIS",
     "PROXY_URL",
     "NTFY_TOPIC_URL",
@@ -334,8 +338,11 @@ def test_ai_settings_fall_back_to_runtime_environment_when_env_file_missing(tmp_
     ai_response = client.get("/api/settings/ai")
     assert ai_response.status_code == 200
     assert ai_response.json() == {
+        "AI_PROVIDER": "openai",
         "OPENAI_BASE_URL": "https://runtime.example.com/v1",
         "OPENAI_MODEL_NAME": "runtime-model",
+        "CLAUDE_BASE_URL": "",
+        "CLAUDE_MODEL_NAME": "",
         "SKIP_AI_ANALYSIS": False,
         "PROXY_URL": "http://127.0.0.1:7890",
     }

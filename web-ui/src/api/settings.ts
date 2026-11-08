@@ -57,13 +57,22 @@ export interface NotificationTestResponse {
   }>
 }
 
+export type AiProvider = 'openai' | 'claude'
+
 export interface AiSettings {
+  AI_PROVIDER?: AiProvider
   OPENAI_API_KEY?: string
   OPENAI_BASE_URL?: string
   OPENAI_MODEL_NAME?: string
+  CLAUDE_API_KEY?: string
+  CLAUDE_BASE_URL?: string
+  CLAUDE_MODEL_NAME?: string
   SKIP_AI_ANALYSIS?: boolean
   PROXY_URL?: string
 }
+
+// 测试连接：provider 指定测哪一家（不传 = OpenAI）
+export type AiTestPayload = AiSettings & { provider?: AiProvider }
 
 export interface RotationSettings {
   ACCOUNT_ROTATION_ENABLED?: boolean
@@ -81,6 +90,7 @@ export interface RotationSettings {
 export interface SystemStatus {
   scraper_running: boolean
   running_task_ids?: number[]
+  ai_provider?: AiProvider
   ai_configured?: boolean
   notification_configured?: boolean
   headless_mode?: boolean
@@ -94,6 +104,8 @@ export interface SystemStatus {
     openai_api_key_set: boolean
     openai_base_url_set: boolean
     openai_model_name_set: boolean
+    claude_api_key_set?: boolean
+    claude_model_name_set?: boolean
     ntfy_topic_url_set: boolean
     pushplus_token_set: boolean
     gotify_url_set: boolean
@@ -154,7 +166,7 @@ export async function updateRotationSettings(settings: RotationSettings): Promis
   })
 }
 
-export async function testAiSettings(settings: AiSettings): Promise<{ success: boolean; message: string; response?: string }> {
+export async function testAiSettings(settings: AiTestPayload): Promise<{ success: boolean; message: string; response?: string }> {
   return await http('/api/settings/ai/test', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useSettings } from '@/composables/useSettings'
-import type { NotificationSettingsUpdate, NotificationTestResponse } from '@/api/settings'
+import type { AiProvider, NotificationSettingsUpdate, NotificationTestResponse } from '@/api/settings'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -36,6 +36,27 @@ const {
 } = useSettings()
 
 const activeTab = ref('ai')
+
+// 设置页上选中的提供方（未保存前只影响这页显示哪组字段、测试哪一家）
+const selectedProvider = computed<AiProvider>(() => (aiSettings.value.AI_PROVIDER === 'claude' ? 'claude' : 'openai'))
+// 已保存、正在生效的提供方（状态页用）
+const activeProvider = computed<AiProvider>(() => (systemStatus.value?.ai_provider === 'claude' ? 'claude' : 'openai'))
+const providerOptions = computed<{ value: AiProvider; label: string }[]>(() => [
+  { value: 'openai', label: t('settings.ai.providerOpenai') },
+  { value: 'claude', label: t('settings.ai.providerClaude') },
+])
+const selectedKeySet = computed(() => {
+  const envFile = systemStatus.value?.env_file
+  return selectedProvider.value === 'claude' ? !!envFile?.claude_api_key_set : !!envFile?.openai_api_key_set
+})
+const activeKeySet = computed(() => {
+  const envFile = systemStatus.value?.env_file
+  return activeProvider.value === 'claude' ? !!envFile?.claude_api_key_set : !!envFile?.openai_api_key_set
+})
+
+function selectProvider(value: AiProvider) {
+  aiSettings.value.AI_PROVIDER = value
+}
 const route = useRoute()
 const validTabs = new Set(['notifications', 'ai', 'rotation', 'status', 'prompts'])
 
@@ -79,7 +100,7 @@ async function handleTestNotification(payload: {
 async function handleSaveAi() {
   try {
     await saveAiSettings()
-    notifySuccess(t('settings.ai.saved'))
+    notifySuccess(t('settings.ai.saved'), t('settings.ai.savedHint'))
   } catch (e) {
     notifyError(t('settings.ai.saveFailed'), (e as Error).message)
   }
@@ -96,7 +117,7 @@ async function handleSaveRotation() {
 
 async function handleTestAi() {
   try {
-    const res = await testAiConnection()
+    const res = await testAiConnection(selectedProvider.value)
     notifySuccess(t('settings.ai.testSuccess'), res.message)
   } catch (e) {
     notifyError(t('settings.ai.testFailed'), (e as Error).message)
@@ -205,24 +226,72 @@ watch(selectedPrompt, async (value) => {
           </CardHeader>
           <CardContent v-if="isReady" class="space-y-4">
             <div class="grid gap-2">
-              <Label>{{ t('settings.ai.baseUrl') }}</Label>
-              <Input v-model="aiSettings.OPENAI_BASE_URL" placeholder="https://api.openai.com/v1" />
+              <Label id="ai-provider-label">{{ t('settings.ai.provider') }}</Label>
+              <div
+                class="inline-flex w-fit rounded-lg border border-slate-200 bg-slate-100 p-1"
+                role="radiogroup"
+                aria-labelledby="ai-provider-label"
+              >
+                <button
+                  v-for="option in providerOptions"
+                  :key="option.value"
+                  type="button"
+                  role="radio"
+                  :aria-checked="selectedProvider === option.value"
+                  class="rounded-md px-4 py-1.5 text-sm font-medium transition-colors"
+                  :class="selectedProvider === option.value ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'"
+                  @click="selectProvider(option.value)"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+              <p class="text-xs text-gray-500">{{ t('settings.ai.providerHint') }}</p>
             </div>
-            <div class="grid gap-2">
-              <Label>{{ t('settings.ai.apiKey') }}</Label>
-              <Input
-                v-model="aiSettings.OPENAI_API_KEY"
-                type="password"
-                :placeholder="t('settings.ai.keyPlaceholder')"
-              />
-              <p class="text-xs text-gray-500">
-                {{ systemStatus?.env_file.openai_api_key_set ? t('settings.ai.keyConfigured') : t('settings.ai.keyMissing') }}
-              </p>
-            </div>
-            <div class="grid gap-2">
-              <Label>{{ t('settings.ai.modelName') }}</Label>
-              <Input v-model="aiSettings.OPENAI_MODEL_NAME" placeholder="gpt-3.5-turbo" />
-            </div>
+            <template v-if="selectedProvider === 'claude'">
+              <div class="grid gap-2">
+                <Label>{{ t('settings.ai.baseUrl') }}</Label>
+                <Input v-model="aiSettings.CLAUDE_BASE_URL" placeholder="https://api.anthropic.com" />
+                <p class="text-xs text-gray-500">{{ t('settings.ai.claudeBaseUrlHint') }}</p>
+              </div>
+              <div class="grid gap-2">
+                <Label>{{ t('settings.ai.apiKey') }}</Label>
+                <Input
+                  v-model="aiSettings.CLAUDE_API_KEY"
+                  type="password"
+                  autocomplete="off"
+                  :placeholder="t('settings.ai.keyPlaceholder')"
+                />
+                <p class="text-xs text-gray-500">
+                  {{ selectedKeySet ? t('settings.ai.keyConfigured') : t('settings.ai.keyMissing') }}
+                </p>
+              </div>
+              <div class="grid gap-2">
+                <Label>{{ t('settings.ai.modelName') }}</Label>
+                <Input v-model="aiSettings.CLAUDE_MODEL_NAME" placeholder="claude-opus-5-5" />
+                <p class="text-xs text-gray-500">{{ t('settings.ai.claudeModelHint') }}</p>
+              </div>
+            </template>
+            <template v-else>
+              <div class="grid gap-2">
+                <Label>{{ t('settings.ai.baseUrl') }}</Label>
+                <Input v-model="aiSettings.OPENAI_BASE_URL" placeholder="https://api.openai.com/v1" />
+              </div>
+              <div class="grid gap-2">
+                <Label>{{ t('settings.ai.apiKey') }}</Label>
+                <Input
+                  v-model="aiSettings.OPENAI_API_KEY"
+                  type="password"
+                  :placeholder="t('settings.ai.keyPlaceholder')"
+                />
+                <p class="text-xs text-gray-500">
+                  {{ selectedKeySet ? t('settings.ai.keyConfigured') : t('settings.ai.keyMissing') }}
+                </p>
+              </div>
+              <div class="grid gap-2">
+                <Label>{{ t('settings.ai.modelName') }}</Label>
+                <Input v-model="aiSettings.OPENAI_MODEL_NAME" placeholder="gpt-3.5-turbo" />
+              </div>
+            </template>
             <div class="grid gap-2">
               <Label>{{ t('settings.ai.proxy') }}</Label>
               <Input v-model="aiSettings.PROXY_URL" placeholder="http://127.0.0.1:7890" />
@@ -305,11 +374,11 @@ watch(selectedPrompt, async (value) => {
                 </div>
                 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div class="p-3 border rounded-lg" :class="systemStatus.env_file.openai_api_key_set ? 'bg-green-50 border-green-200' : 'bg-yellow-50 border-yellow-200'">
+                    <div class="p-3 border rounded-lg" :class="activeKeySet ? 'bg-green-50 border-green-200' : 'bg-yellow-50 border-yellow-200'">
                         <div class="flex justify-between items-center">
-                            <span class="font-medium text-sm">{{ t('settings.status.openaiKey') }}</span>
-                            <span class="text-xs font-bold" :class="systemStatus.env_file.openai_api_key_set ? 'text-green-700' : 'text-yellow-700'">
-                                {{ systemStatus.env_file.openai_api_key_set ? t('common.active') : t('common.inactive') }}
+                            <span class="font-medium text-sm">{{ activeProvider === 'claude' ? t('settings.status.claudeKey') : t('settings.status.openaiKey') }}</span>
+                            <span class="text-xs font-bold" :class="activeKeySet ? 'text-green-700' : 'text-yellow-700'">
+                                {{ activeKeySet ? t('common.active') : t('common.inactive') }}
                             </span>
                         </div>
                     </div>

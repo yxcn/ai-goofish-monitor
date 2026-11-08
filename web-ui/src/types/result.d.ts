@@ -75,6 +75,9 @@ export interface AiAnalysis {
   value_score?: number;
   value_summary?: string;
   prompt_version?: string;
+  // 哪家、哪个模型给的结论（2026-11 加入系统设置切换提供方之后才有）
+  ai_provider?: 'openai' | 'claude';
+  ai_model?: string;
   risk_tags?: string[];
   criteria_analysis?: Record<string, CriteriaEntry>;
   matched_keywords?: string[];

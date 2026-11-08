@@ -4,6 +4,7 @@ import type {
   NotificationSettings,
   NotificationSettingsUpdate,
   NotificationTestResponse,
+  AiProvider,
   AiSettings,
   RotationSettings,
   SystemStatus
@@ -88,20 +89,26 @@ export function useSettings() {
     }
   }
 
+  // Key 留空 = 不修改：不放进请求体，免得把已保存的 Key 清掉
+  function buildAiPayload(): AiSettings {
+    const payload = { ...aiSettings.value }
+    for (const field of ['OPENAI_API_KEY', 'CLAUDE_API_KEY'] as const) {
+      const apiKey = (payload[field] || '').trim()
+      if (apiKey) {
+        payload[field] = apiKey
+      } else {
+        delete payload[field]
+      }
+    }
+    return payload
+  }
+
   async function saveAiSettings() {
     isSaving.value = true
     try {
-      const payload = { ...aiSettings.value }
-      const apiKey = (payload.OPENAI_API_KEY || '').trim()
-      if (apiKey) {
-        payload.OPENAI_API_KEY = apiKey
-      } else {
-        delete payload.OPENAI_API_KEY
-      }
-      await settingsApi.updateAiSettings(payload)
-      if (aiSettings.value.OPENAI_API_KEY) {
-        aiSettings.value.OPENAI_API_KEY = ''
-      }
+      await settingsApi.updateAiSettings(buildAiPayload())
+      aiSettings.value.OPENAI_API_KEY = ''
+      aiSettings.value.CLAUDE_API_KEY = ''
       // Refresh status
       systemStatus.value = await settingsApi.getSystemStatus()
     } catch (e) {
@@ -124,17 +131,10 @@ export function useSettings() {
     }
   }
 
-  async function testAiConnection() {
+  async function testAiConnection(provider: AiProvider = 'openai') {
     isSaving.value = true
     try {
-      const payload = { ...aiSettings.value }
-      const apiKey = (payload.OPENAI_API_KEY || '').trim()
-      if (apiKey) {
-        payload.OPENAI_API_KEY = apiKey
-      } else {
-        delete payload.OPENAI_API_KEY
-      }
-      const res = await settingsApi.testAiSettings(payload)
+      const res = await settingsApi.testAiSettings({ ...buildAiPayload(), provider })
       return res
     } catch (e) {
       if (e instanceof Error) error.value = e

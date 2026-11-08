@@ -95,6 +95,8 @@ const facts = computed<Fact[]>(() => {
   if (lastActive) list.push({ key: 'active', text: lastActive, detail: true })
   if (replyRate) list.push({ key: 'replyRate', text: t('results.card.replyRate', { rate: replyRate }), detail: true })
   if (replyInterval) list.push({ key: 'replyIn', text: t('results.card.replyIn', { time: replyInterval }), detail: true })
+  const aiModel = String(ai.value?.ai_model ?? '').trim()
+  if (aiModel) list.push({ key: 'aiModel', text: t('results.card.analyzedBy', { model: aiModel }), detail: true })
   return list.filter((fact) => detailsOpen.value || !fact.detail)
 })
 // 划线原价：占位符（暂无）或和现价相同时不显示

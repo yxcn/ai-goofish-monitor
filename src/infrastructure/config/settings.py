@@ -47,6 +47,18 @@ def _coerce_env_bool(cls, value, info):
     return parse_env_bool(value, default)
 
 
+# AI 提供方：系统设置里手动切换，默认 OpenAI（含各类 OpenAI 兼容服务）
+AI_PROVIDER_OPENAI = "openai"
+AI_PROVIDER_CLAUDE = "claude"
+AI_PROVIDERS = (AI_PROVIDER_OPENAI, AI_PROVIDER_CLAUDE)
+
+
+def normalize_ai_provider(value) -> str:
+    """AI_PROVIDER 的统一解析：大小写、首尾空白不敏感；空值或不认识的写法一律回落到 openai。"""
+    text = str(value or "").strip().lower()
+    return text if text in AI_PROVIDERS else AI_PROVIDER_OPENAI
+
+
 def _env_field(default, env_name: str, **kwargs):
     if _USING_PYDANTIC_SETTINGS:
         return Field(default, validation_alias=env_name, **kwargs)
@@ -72,6 +84,7 @@ else:
 
 class AISettings(_EnvSettings):
     """AI模型配置"""
+    provider: str = _env_field(AI_PROVIDER_OPENAI, "AI_PROVIDER")
     api_key: Optional[str] = _env_field(None, "OPENAI_API_KEY")
     base_url: str = _env_field("", "OPENAI_BASE_URL")
     model_name: str = _env_field("", "OPENAI_MODEL_NAME")
@@ -80,14 +93,29 @@ class AISettings(_EnvSettings):
     enable_response_format: bool = _env_field(True, "ENABLE_RESPONSE_FORMAT")
     enable_thinking: bool = _env_field(False, "ENABLE_THINKING")
     skip_analysis: bool = _env_field(False, "SKIP_AI_ANALYSIS")
+    # Claude：不用 ANTHROPIC_* 这组名字，免得 SDK 或外部 shell（如 Claude Code 终端）里的同名变量混进来
+    claude_api_key: Optional[str] = _env_field(None, "CLAUDE_API_KEY")
+    claude_base_url: str = _env_field("", "CLAUDE_BASE_URL")
+    claude_model_name: str = _env_field("", "CLAUDE_MODEL_NAME")
 
     @field_validator("debug_mode", "enable_response_format", "enable_thinking", "skip_analysis", mode="before")
     @classmethod
     def _coerce_bools(cls, value, info):
         return _coerce_env_bool(cls, value, info)
 
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _normalize_provider(cls, value):
+        return normalize_ai_provider(value)
+
+    @property
+    def uses_claude(self) -> bool:
+        return self.provider == AI_PROVIDER_CLAUDE
+
     def is_configured(self) -> bool:
-        """检查AI是否已正确配置"""
+        """检查当前选中的 AI 提供方是否已配置（OpenAI 要地址和模型名；Claude 要 Key，地址和模型有默认值）"""
+        if self.uses_claude:
+            return bool(self.claude_api_key)
         return bool(self.base_url and self.model_name)
 
 

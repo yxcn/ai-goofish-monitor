@@ -20,8 +20,16 @@ from src.core.path_safety import (
 )
 from src.infrastructure.config.env_manager import env_manager
 from src.infrastructure.config.settings import (
+    AI_PROVIDER_CLAUDE,
+    AI_PROVIDERS,
     AISettings,
+    normalize_ai_provider,
     reload_settings,
+)
+from src.infrastructure.external.claude_client import (
+    DEFAULT_CLAUDE_BASE_URL,
+    create_sync_claude_client,
+    normalize_claude_model,
 )
 from src.services.ai_request_compat import (
     CHAT_COMPLETIONS_API_MODE,
@@ -55,6 +63,8 @@ _settings_module = importlib.import_module("src.infrastructure.config.settings")
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 AI_TEST_PROMPT = "Reply with OK only."
 AI_TEST_MAX_OUTPUT_TOKENS = 32
+# Claude 新模型的思考关不掉，且算在 max_tokens 里；32 可能全被思考用掉，测试连接给宽一点
+CLAUDE_TEST_MAX_OUTPUT_TOKENS = 1024
 
 
 def _reload_env() -> None:
@@ -115,9 +125,13 @@ class NotificationTestRequest(BaseModel):
 class AISettingsModel(BaseModel):
     """AI设置模型"""
 
+    AI_PROVIDER: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_BASE_URL: Optional[str] = None
     OPENAI_MODEL_NAME: Optional[str] = None
+    CLAUDE_API_KEY: Optional[str] = None
+    CLAUDE_BASE_URL: Optional[str] = None
+    CLAUDE_MODEL_NAME: Optional[str] = None
     SKIP_AI_ANALYSIS: Optional[bool] = None
     PROXY_URL: Optional[str] = None
 
@@ -248,6 +262,8 @@ async def get_system_status(
     openai_api_key = env_manager.get_value("OPENAI_API_KEY", "")
     openai_base_url = env_manager.get_value("OPENAI_BASE_URL", "")
     openai_model_name = env_manager.get_value("OPENAI_MODEL_NAME", "")
+    claude_api_key = env_manager.get_value("CLAUDE_API_KEY", "")
+    claude_model_name = env_manager.get_value("CLAUDE_MODEL_NAME", "")
     ai_settings = AISettings()
     notification_settings = load_notification_settings()
     running_task_ids = [
@@ -257,6 +273,7 @@ async def get_system_status(
     ]
 
     return {
+        "ai_provider": _current_ai_provider(),
         "ai_configured": ai_settings.is_configured(),
         "notification_configured": notification_settings.has_any_notification_enabled(),
         "headless_mode": _settings_module.scraper_settings.run_headless,
@@ -272,17 +289,34 @@ async def get_system_status(
             "openai_api_key_set": bool(openai_api_key),
             "openai_base_url_set": bool(openai_base_url),
             "openai_model_name_set": bool(openai_model_name),
+            "claude_api_key_set": bool(claude_api_key),
+            "claude_model_name_set": bool(claude_model_name),
             **build_notification_status_flags(notification_settings),
         },
         "configured_notification_channels": build_configured_channels(notification_settings),
     }
 
 
+def _current_ai_provider() -> str:
+    return normalize_ai_provider(env_manager.get_value("AI_PROVIDER", ""))
+
+
+def _validate_ai_provider(value: Optional[str]) -> str:
+    text = str(value or "").strip().lower()
+    if text not in AI_PROVIDERS:
+        raise ValueError(f"AI_PROVIDER 只能是 {' / '.join(AI_PROVIDERS)}")
+    return text
+
+
 @router.get("/ai")
 async def get_ai_settings():
     return {
+        # Key 永远不回传前端，只回传地址和模型名
+        "AI_PROVIDER": _current_ai_provider(),
         "OPENAI_BASE_URL": env_manager.get_value("OPENAI_BASE_URL", ""),
         "OPENAI_MODEL_NAME": env_manager.get_value("OPENAI_MODEL_NAME", ""),
+        "CLAUDE_BASE_URL": env_manager.get_value("CLAUDE_BASE_URL", ""),
+        "CLAUDE_MODEL_NAME": env_manager.get_value("CLAUDE_MODEL_NAME", ""),
         "SKIP_AI_ANALYSIS": env_manager.get_value("SKIP_AI_ANALYSIS", "false").lower() == "true",
         "PROXY_URL": env_manager.get_value("PROXY_URL", ""),
     }
@@ -292,12 +326,25 @@ async def get_ai_settings():
 async def update_ai_settings(settings: AISettingsModel):
     updates = {}
     try:
+        if settings.AI_PROVIDER is not None:
+            settings.AI_PROVIDER = _validate_ai_provider(settings.AI_PROVIDER)
         if settings.OPENAI_BASE_URL is not None:
             settings.OPENAI_BASE_URL = validate_url_scheme(settings.OPENAI_BASE_URL, field_label="OPENAI_BASE_URL")
+        if settings.CLAUDE_BASE_URL is not None:
+            settings.CLAUDE_BASE_URL = validate_url_scheme(settings.CLAUDE_BASE_URL, field_label="CLAUDE_BASE_URL")
         if settings.PROXY_URL is not None:
             settings.PROXY_URL = validate_proxy_url(settings.PROXY_URL, field_label="PROXY_URL")
+        _ensure_claude_ready_if_selected(settings)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if settings.AI_PROVIDER is not None:
+        updates["AI_PROVIDER"] = settings.AI_PROVIDER
+    if settings.CLAUDE_API_KEY is not None:
+        updates["CLAUDE_API_KEY"] = settings.CLAUDE_API_KEY
+    if settings.CLAUDE_BASE_URL is not None:
+        updates["CLAUDE_BASE_URL"] = settings.CLAUDE_BASE_URL
+    if settings.CLAUDE_MODEL_NAME is not None:
+        updates["CLAUDE_MODEL_NAME"] = settings.CLAUDE_MODEL_NAME.strip()
     if settings.OPENAI_API_KEY is not None:
         updates["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
     if settings.OPENAI_BASE_URL is not None:
@@ -316,27 +363,102 @@ async def update_ai_settings(settings: AISettingsModel):
     return {"message": "AI设置已成功更新"}
 
 
+def _ensure_claude_ready_if_selected(settings: "AISettingsModel") -> None:
+    """保存后若提供方是 Claude，必须已有 Claude Key（本次填写或已保存），否则分析会全部失败。"""
+    provider = settings.AI_PROVIDER or _current_ai_provider()
+    if provider != AI_PROVIDER_CLAUDE:
+        return
+    submitted_key = str(settings.CLAUDE_API_KEY or "").strip()
+    stored_key = str(env_manager.get_value("CLAUDE_API_KEY", "") or "").strip()
+    if not (submitted_key or stored_key):
+        raise ValueError("切换到 Claude 前请先填写 Claude API Key")
+
+
 def resolve_ai_test_credentials(submitted: dict, *, stored_api_key: str, stored_base_url: str,
-                                stored_proxy_url: str) -> tuple[str, str, str]:
+                                stored_proxy_url: str, key_field: str = "OPENAI_API_KEY",
+                                base_url_field: str = "OPENAI_BASE_URL",
+                                default_base_url: str = "") -> tuple[str, str, str]:
     """决定测试连接用哪把 Key。
 
-    已保存的 Key 只能发往已保存的地址（含代理）：请求体里换了 OPENAI_BASE_URL 或 PROXY_URL
+    已保存的 Key 只能发往已保存的地址（含代理）：请求体里换了 API 地址或 PROXY_URL
     却没带新 Key，就拒绝，否则任何能调这个接口的人都能把存好的 Key 发到自己的服务器上。
+    OpenAI 和 Claude 各用各的字段名；Claude 的地址留空等于官方地址（default_base_url）。
     """
-    submitted_api_key = str(submitted.get("OPENAI_API_KEY") or "").strip()
-    base_url = validate_url_scheme(submitted.get("OPENAI_BASE_URL"), field_label="OPENAI_BASE_URL")
+    submitted_api_key = str(submitted.get(key_field) or "").strip()
+    base_url = validate_url_scheme(submitted.get(base_url_field), field_label=base_url_field) or default_base_url
     proxy_url = validate_proxy_url(submitted.get("PROXY_URL"), field_label="PROXY_URL")
     if submitted_api_key:
         return submitted_api_key, base_url, proxy_url
     address_changed = (
-        normalize_url_for_compare(base_url) != normalize_url_for_compare(stored_base_url)
+        normalize_url_for_compare(base_url) != normalize_url_for_compare(stored_base_url or default_base_url)
         or normalize_url_for_compare(proxy_url) != normalize_url_for_compare(stored_proxy_url)
     )
     if address_changed:
         raise ValueError("更换 API 地址或代理后请重新填写 API Key 再测试：已保存的 Key 不会发往新地址")
     if not stored_api_key:
-        raise ValueError("尚未配置 OPENAI_API_KEY，请先填写")
+        raise ValueError(f"尚未配置 {key_field}，请先填写")
     return stored_api_key, base_url, proxy_url
+
+
+def _run_claude_connectivity_test(api_key: str, base_url: str, proxy_url: str, model_name: str) -> str:
+    client = create_sync_claude_client(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=60.0,
+        max_retries=0,
+        proxy_url=proxy_url or None,
+    )
+    try:
+        response = client.messages.create(
+            model=model_name,
+            max_tokens=CLAUDE_TEST_MAX_OUTPUT_TOKENS,
+            messages=[{"role": "user", "content": AI_TEST_PROMPT}],
+        )
+    finally:
+        client.close()
+    texts = [
+        block.text
+        for block in (getattr(response, "content", None) or [])
+        if getattr(block, "type", None) == "text" and isinstance(getattr(block, "text", None), str)
+    ]
+    # 连通性测试只关心请求成功；正文可能为空（思考占满了很小的输出上限）
+    return "".join(texts).strip() or f"(stop_reason={getattr(response, 'stop_reason', None)})"
+
+
+async def _test_claude_settings(settings: dict) -> dict:
+    try:
+        api_key, base_url, proxy_url = resolve_ai_test_credentials(
+            settings,
+            stored_api_key=env_manager.get_value("CLAUDE_API_KEY", "") or "",
+            stored_base_url=env_manager.get_value("CLAUDE_BASE_URL", "") or "",
+            stored_proxy_url=env_manager.get_value("PROXY_URL", "") or "",
+            key_field="CLAUDE_API_KEY",
+            base_url_field="CLAUDE_BASE_URL",
+            default_base_url=DEFAULT_CLAUDE_BASE_URL,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    model_name = normalize_claude_model(
+        settings.get("CLAUDE_MODEL_NAME") or env_manager.get_value("CLAUDE_MODEL_NAME", "")
+    )
+    try:
+        reply = await asyncio.to_thread(
+            _run_claude_connectivity_test, api_key, base_url, proxy_url, model_name
+        )
+        return {
+            "success": True,
+            "message": f"Claude 连接测试成功（{model_name}）！",
+            "response": reply,
+        }
+    except Exception as exc:
+        # 只回显异常类型和状态码，不把上游响应正文原样带回前端
+        status_code = getattr(exc, "status_code", None)
+        detail = f"{type(exc).__name__}" + (f" (HTTP {status_code})" if status_code else "")
+        return {
+            "success": False,
+            "message": f"Claude 连接测试失败: {detail}",
+        }
 
 
 def _run_ai_connectivity_test(api_key: str, base_url: str, proxy_url: str, model_name: str):
@@ -387,7 +509,9 @@ def _run_ai_connectivity_test(api_key: str, base_url: str, proxy_url: str, model
 
 @router.post("/ai/test")
 async def test_ai_settings(settings: dict):
-    """测试AI模型设置是否有效"""
+    """测试AI模型设置是否有效。请求体带 provider=claude 时测 Claude，否则测 OpenAI。"""
+    if normalize_ai_provider(settings.get("provider")) == AI_PROVIDER_CLAUDE:
+        return await _test_claude_settings(settings)
     try:
         api_key, base_url, proxy_url = resolve_ai_test_credentials(
             settings,

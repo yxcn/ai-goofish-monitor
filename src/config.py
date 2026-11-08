@@ -4,8 +4,14 @@ import sys
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from src.infrastructure.config.settings import parse_env_bool
+from src.infrastructure.config.settings import AI_PROVIDER_CLAUDE, normalize_ai_provider, parse_env_bool
 from src.infrastructure.external.ai_client import _sanitize_no_proxy_env, redact_url_userinfo  # noqa: F401
+from src.infrastructure.external.claude_client import (
+    claude_request_timeout,
+    create_async_claude_client,
+    normalize_claude_base_url,
+    normalize_claude_model,
+)
 from src.services.ai_request_compat import AIRuntimeLimits
 
 
@@ -25,9 +31,14 @@ API_URL_PATTERN = "h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search"
 DETAIL_API_URL_PATTERN = "h5api.m.goofish.com/h5/mtop.taobao.idle.pc.detail"
 
 # --- Environment Variables ---
+# AI 提供方：openai（默认，含各类 OpenAI 兼容服务）或 claude，在 Web UI 系统设置里切换
+AI_PROVIDER = normalize_ai_provider(os.getenv("AI_PROVIDER"))
 API_KEY = os.getenv("OPENAI_API_KEY")
 BASE_URL = os.getenv("OPENAI_BASE_URL")
 MODEL_NAME = os.getenv("OPENAI_MODEL_NAME")
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
+CLAUDE_BASE_URL = normalize_claude_base_url(os.getenv("CLAUDE_BASE_URL"))
+CLAUDE_MODEL_NAME = normalize_claude_model(os.getenv("CLAUDE_MODEL_NAME"))
 PROXY_URL = os.getenv("PROXY_URL")
 NTFY_TOPIC_URL = os.getenv("NTFY_TOPIC_URL")
 GOTIFY_URL = os.getenv("GOTIFY_URL")
@@ -74,8 +85,33 @@ IMAGE_DOWNLOAD_HEADERS = {
 }
 
 # --- Client Initialization ---
-# 检查配置是否齐全
-if not all([BASE_URL, MODEL_NAME]):
+# Claude 客户端只在 AI_PROVIDER=claude 时创建；OpenAI 那套保持原样
+claude_client = None
+CLAUDE_REQUEST_TIMEOUT_SECONDS = claude_request_timeout(AI_REQUEST_TIMEOUT_SECONDS)
+
+if AI_PROVIDER == AI_PROVIDER_CLAUDE:
+    client = None
+    if not CLAUDE_API_KEY:
+        print("警告：已选择 Claude 作为 AI 提供方，但未设置 CLAUDE_API_KEY。AI相关功能将不可用。")
+    else:
+        try:
+            _sanitize_no_proxy_env()
+            if PROXY_URL:
+                print(f"正在为AI请求使用HTTP/S代理: {redact_url_userinfo(PROXY_URL)}")
+                # 和 OpenAI 分支一致：图片下载（requests）也走同一个代理
+                os.environ['HTTP_PROXY'] = PROXY_URL
+                os.environ['HTTPS_PROXY'] = PROXY_URL
+            claude_client = create_async_claude_client(
+                api_key=CLAUDE_API_KEY,
+                base_url=CLAUDE_BASE_URL,
+                timeout=CLAUDE_REQUEST_TIMEOUT_SECONDS,
+                max_retries=AI_SDK_MAX_RETRIES,
+                proxy_url=PROXY_URL or None,
+            )
+        except Exception as e:
+            print(f"初始化 Claude 客户端时出错: {e}")
+            claude_client = None
+elif not all([BASE_URL, MODEL_NAME]):  # 检查 OpenAI 配置是否齐全
     print("警告：未在 .env 文件中完整设置 OPENAI_BASE_URL 和 OPENAI_MODEL_NAME。AI相关功能可能无法使用。")
     client = None
 else:

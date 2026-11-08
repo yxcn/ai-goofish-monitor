@@ -24,22 +24,35 @@ from src.config import (
     AI_DEBUG_MODE,
     AI_MAX_IMAGE_BYTES,
     AI_MAX_IMAGES_PER_ITEM,
+    AI_PROVIDER,
+    CLAUDE_BASE_URL,
+    CLAUDE_MODEL_NAME,
+    CLAUDE_REQUEST_TIMEOUT_SECONDS,
     IMAGE_DOWNLOAD_HEADERS,
     IMAGE_SAVE_DIR,
     TASK_IMAGE_DIR_PREFIX,
     MODEL_NAME,
     ENABLE_RESPONSE_FORMAT,
+    claude_client,
     client,
     get_ai_request_params,
 )
 from src.ai_message_builder import (
     build_analysis_text_prompt,
+    build_product_only_text_prompt,
     build_user_message_content,
 )
 from src.infrastructure.config.env_manager import env_manager
+from src.infrastructure.config.settings import AI_PROVIDER_CLAUDE, AI_PROVIDER_OPENAI
 from src.infrastructure.external.ai_client import (
     AIAnalysisTimeoutError,
     dump_ai_product_json,
+)
+from src.infrastructure.external.claude_client import (
+    CLAUDE_API_MODE,
+    ClaudeCallState,
+    call_claude_with_retries,
+    claude_total_timeout,
 )
 from src.services.ai_response_parser import (
     AIResponseFormatError,
@@ -91,6 +104,8 @@ AI_MAX_ATTEMPTS = DEFAULT_MAX_ATTEMPTS
 
 # 兼容性探测结果在模块级缓存：同一进程里后续商品直接复用第一个商品学到的参数
 _compat_profile = CompatProfile()
+# Claude 那边要缓存的只有「服务端认不认拒答兜底参数」
+_claude_state = ClaudeCallState()
 
 
 def get_compat_profile() -> CompatProfile:
@@ -100,6 +115,11 @@ def get_compat_profile() -> CompatProfile:
 def reset_compat_profile() -> None:
     """重新加载配置 / 换模型时调用，清掉已缓存的兼容性探测结果。"""
     _compat_profile.reset()
+    _claude_state.reset()
+
+
+def _uses_claude() -> bool:
+    return AI_PROVIDER == AI_PROVIDER_CLAUDE
 
 
 class ImageTooLargeError(Exception):
@@ -391,7 +411,7 @@ def build_ai_debug_log_payload(
         "task_name": product_data.get("任务名称") or product_data.get("任务名") or "unknown",
         "product_id": item_info.get("商品ID", "N/A"),
         "title": item_info.get("商品标题", "无"),
-        "model": MODEL_NAME,
+        "model": CLAUDE_MODEL_NAME if _uses_claude() else MODEL_NAME,
         "api_mode": api_mode,
         "message_count": len(messages or []),
         "text_chars": len(combined_text),
@@ -607,6 +627,9 @@ async def _run_ai_analysis_attempts(messages, product_id) -> dict:
             if not validate_ai_response_format(parsed_response):
                 raise AIResponseFormatError("AI响应格式缺少必需字段或字段类型不正确。")
             safe_print(f"   [AI分析] 第{call_index}次尝试成功，响应格式验证通过")
+            # 记下是哪家、哪个模型给的结论：切换提供方之后新旧结果混在一起也分得清
+            parsed_response["ai_provider"] = AI_PROVIDER_OPENAI
+            parsed_response["ai_model"] = _response_model_name(response, MODEL_NAME)
             return parsed_response
 
         except AIResponseTruncatedError as exc:
@@ -661,9 +684,51 @@ async def _run_ai_analysis_attempts(messages, product_id) -> dict:
                 )
 
 
+def _response_model_name(response, default):
+    model = getattr(response, "model", None)
+    return model if isinstance(model, str) and model.strip() else default
+
+
+def _parse_and_validate_ai_text(ai_response_content: str) -> dict:
+    if AI_DEBUG_MODE:
+        safe_print("\n--- [AI DEBUG] Claude RAW AI RESPONSE ---")
+        safe_print(ai_response_content)
+        safe_print("---------------------\n")
+    parsed_response = parse_ai_response_json(ai_response_content)
+    if not isinstance(parsed_response, dict) or not validate_ai_response_format(parsed_response):
+        raise AIResponseFormatError("AI响应格式缺少必需字段或字段类型不正确。")
+    return parsed_response
+
+
+async def _run_claude_analysis_attempts(messages, product_id) -> dict:
+    """Claude 版的分析循环：重试分类同 OpenAI，解析 / 字段校验失败也会重试。"""
+    if AI_DEBUG_MODE:
+        safe_print(
+            f"\n--- [AI DEBUG] Claude REQUEST: model={CLAUDE_MODEL_NAME}, "
+            f"content_types={[_extract_message_content_types(m) for m in messages]} ---\n"
+        )
+    parsed_response, model_name = await call_claude_with_retries(
+        claude_client,
+        model=CLAUDE_MODEL_NAME,
+        messages=messages,
+        max_tokens=AI_MAX_OUTPUT_TOKENS,
+        state=_claude_state,
+        base_url=CLAUDE_BASE_URL,
+        max_attempts=AI_MAX_ATTEMPTS,
+        backoff_schedule=AI_RETRY_BACKOFF_SECONDS,
+        postprocess=_parse_and_validate_ai_text,
+        log=safe_print,
+    )
+    safe_print(f"   [AI分析] Claude（{model_name}）分析成功，响应格式验证通过")
+    parsed_response["ai_provider"] = AI_PROVIDER_CLAUDE
+    parsed_response["ai_model"] = model_name
+    return parsed_response
+
+
 async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
     """将完整的商品JSON数据和所有图片发送给 AI 进行分析（异步）。"""
-    if not client:
+    use_claude = _uses_claude()
+    if not (claude_client if use_claude else client):
         safe_print("   [AI分析] 错误：AI客户端未初始化，跳过分析。")
         return None
 
@@ -691,13 +756,24 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
 
     image_data_urls = build_image_data_urls(image_paths)
 
-    combined_text_prompt = build_analysis_text_prompt(
-        product_details_json,
-        system_prompt,
-        include_images=bool(image_data_urls),
-    )
-    user_content = build_user_message_content(combined_text_prompt, image_data_urls)
-    messages = [{"role": "user", "content": user_content}]
+    if use_claude:
+        # 分析标准放进 system（同一轮所有商品都一样，按缓存计费），user 只放商品 JSON 和图片
+        product_text_prompt = build_product_only_text_prompt(
+            product_details_json,
+            include_images=bool(image_data_urls),
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": build_user_message_content(product_text_prompt, image_data_urls)},
+        ]
+    else:
+        combined_text_prompt = build_analysis_text_prompt(
+            product_details_json,
+            system_prompt,
+            include_images=bool(image_data_urls),
+        )
+        user_content = build_user_message_content(combined_text_prompt, image_data_urls)
+        messages = [{"role": "user", "content": user_content}]
 
     if not AI_DEBUG_MODE:
         return await _analyze_with_total_timeout(messages, product_id)
@@ -718,7 +794,7 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
                 product_data=product_data,
                 messages=messages,
                 image_data_urls=image_data_urls,
-                api_mode=_compat_profile.api_mode,
+                api_mode=CLAUDE_API_MODE if use_claude else _compat_profile.api_mode,
                 result=result,
                 error=error,
             ),
@@ -726,13 +802,20 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
 
 
 async def _analyze_with_total_timeout(messages, product_id):
-    total_timeout = AI_ANALYSIS_TOTAL_TIMEOUT_SECONDS
+    if _uses_claude():
+        runner = _run_claude_analysis_attempts
+        total_timeout = claude_total_timeout(
+            AI_ANALYSIS_TOTAL_TIMEOUT_SECONDS, CLAUDE_REQUEST_TIMEOUT_SECONDS
+        )
+    else:
+        runner = _run_ai_analysis_attempts
+        total_timeout = AI_ANALYSIS_TOTAL_TIMEOUT_SECONDS
     if not total_timeout or total_timeout <= 0:
-        return await _run_ai_analysis_attempts(messages, product_id)
+        return await runner(messages, product_id)
 
     try:
         return await asyncio.wait_for(
-            _run_ai_analysis_attempts(messages, product_id),
+            runner(messages, product_id),
             timeout=total_timeout,
         )
     except asyncio.TimeoutError:
