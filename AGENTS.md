@@ -13,6 +13,11 @@
 - 一键本地启动：`bash start.sh`（自动安装依赖、前端构建并启动后端）。
 - Docker：`docker compose up --build -d`，查看日志 `docker compose logs -f app`，停止 `docker compose down`。
 
+## Agent 协作约定
+- 不要擅自启动、重启或停止后台服务（后端 `python -m src.app` / uvicorn、前端 `npm run dev`、`start.sh`、Docker 等）。
+- 改动后若需要启动或重启服务才能生效，只需告知用户并给出可直接执行的命令，由用户自己运行。
+- 仅当用户明确要求你启动后台服务时，才可以代为启动。
+
 ## 编码风格与命名约定
 - 保持分层：API → services → domain → infrastructure，避免跨层耦合，模块保持精简。
 - Python 测试函数命名为 `test_*`，文件与路径遵循上述测试目录规范。
